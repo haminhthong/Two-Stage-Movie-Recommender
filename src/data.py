@@ -2,6 +2,19 @@
 
 Bao gồm tải tập tương tác (ratings), danh mục phim (movies) và thực hiện
 phân chia dữ liệu theo chuỗi thời gian (time-based leave-last-two split).
+
+Quy ước cốt lõi về dữ liệu:
+1. Training Signal (Implicit Positive Feedback):
+   - Chỉ các tương tác có Rating >= 4.0 mới được định nghĩa là tương tác tích cực
+     dùng để xây dựng ma trận tương tác thưa và huấn luyện không gian nhúng ẩn (Latent Space).
+   - Các lượt đánh giá < 4.0 là tín hiệu không tích cực, KHÔNG được xem là positive feedback.
+2. Seen Filter (Guardrail chống lãng phí slot):
+   - Mọi sản phẩm người dùng đã từng đánh giá trong quá khứ (kể cả rating < 4.0)
+     đều thuộc tập "Seen Items". Khi suy luận, hệ thống phải loại bỏ toàn bộ các item này
+     vì người dùng đã từng xem/trải nghiệm rồi, không nên gợi ý lại.
+3. Temporal Guarantee (Không rò rỉ thông tin tương lai):
+   - Lịch sử của người dùng tại thời điểm đưa ra gợi ý không bao giờ được chứa các hành vi
+     xảy ra trong tương lai (không chứa validation item hoặc test item).
 """
 
 from __future__ import annotations
@@ -82,8 +95,8 @@ def time_split(
     - Với các user có ít nhất min_positive tương tác tích cực:
       * Tương tác tích cực mới nhất làm Test set (ground truth tích cực cho Test).
       * Tương tác tích cực kề cuối làm Validation set (ground truth tích cực cho Validation).
-      * Tất cả tương tác diễn ra trước mốc thời gian của validation set được đưa vào
-        Tập Huấn luyện (Train set), loại bỏ hoàn toàn Lookahead Data Leakage.
+      * Tất cả tương tác (kể cả rating < threshold) diễn ra trước mốc thời gian của validation set
+        được đưa vào Tập Huấn luyện (Train set), loại bỏ hoàn toàn Lookahead Data Leakage.
     - Với user có ít hơn min_positive tương tác tích cực, toàn bộ tương tác được giữ trong Train set.
 
     Args:
@@ -110,4 +123,3 @@ def time_split(
     train_df = df[train_mask].copy()
 
     return train_df, val_df, test_df
-

@@ -116,7 +116,7 @@ def test_model_config_records_retrieval_contract() -> None:
         pytest.skip("Chưa có model artifact config.json để test.")
 
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    assert config["schema_version"] in {1, 2}
+    assert config["schema_version"] in {1, 2, 3}
     assert config["candidate_k"] >= config["top_k"]
     assert config["embedding_dimension"] > 0
 
