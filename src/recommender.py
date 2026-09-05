@@ -3,8 +3,8 @@
 Triển khai quy trình gợi ý cá nhân hóa gồm 2 giai đoạn:
 1. Giai đoạn 1 (Candidate Retrieval): Tìm kiếm nhanh top ứng viên bằng Tích vô hướng (Dot Product)
    trên không gian nhúng ẩn (Latent Vector Space).
-2. Giai đoạn 2 (Reranking & MMR Diversity): Cân bằng giữa điểm sở thích cá nhân (Latent score),
-   độ phổ biến sản phẩm (Popularity Prior) và phạt mức độ trùng lặp thể loại (MMR Diversity Penalty)
+2. Giai đoạn 2 (Reranking & MMR-Style Diversity): Cân bằng giữa điểm sở thích cá nhân (Latent score),
+   độ phổ biến sản phẩm (Popularity Prior) và phạt mức độ trùng lặp thể loại (MMR-style Genre Diversity Reranking)
    để chống hiện tượng Filter Bubble.
 """
 
@@ -87,6 +87,7 @@ class Recommender:
         user_id: int,
         k: int = 10,
         diversity_lambda: float | None = None,
+        latent_weight: float | None = None,
     ) -> list[int]:
         """Tạo danh sách top-K gợi ý cá nhân hóa cho một người dùng.
 
@@ -97,14 +98,16 @@ class Recommender:
            và dùng `np.argpartition` trích xuất nhanh Top-200 candidate tốt nhất.
         3. Stage 2 (Reranking): Chuẩn hóa điểm latent score về [0, 1] và kết hợp với
            Popularity Rank theo trọng số `latent_weight` (alpha).
-        4. Diversity Penalty (MMR): Duyệt chọn từng item tối ưu hóa hàm mục tiêu MMR
-           phạt các item có thể loại quá giống với những item đã chọn trước đó.
+        4. Diversity Penalty (MMR-style): Duyệt chọn từng item tối ưu hóa hàm mục tiêu
+           phạt mức độ trùng lặp thể loại (MMR-style genre diversity reranking).
 
         Args:
             user_id (int): ID người dùng cần gợi ý.
             k (int): Số lượng sản phẩm gợi ý tối đa. (Mặc định: 10)
             diversity_lambda (float | None): Hệ số phạt trùng lặp thể loại [0.0, 1.0].
                 Nếu None, lấy mặc định từ config (0.05).
+            latent_weight (float | None): Trọng số điểm latent score [0.0, 1.0].
+                Nếu None, lấy mặc định từ config.
 
         Returns:
             list[int]: Danh sách ID các bộ phim được gợi ý theo thứ tự ưu tiên.
@@ -153,9 +156,14 @@ class Recommender:
             ]
         )
 
-        latent_weight = float(self.config.get("latent_weight", 0.9))
+        effective_latent_weight = float(
+            self.config.get("latent_weight", 0.9)
+            if latent_weight is None
+            else latent_weight
+        )
         final_scores = (
-            latent_weight * normalized_scores + (1.0 - latent_weight) * pop_scores
+            effective_latent_weight * normalized_scores
+            + (1.0 - effective_latent_weight) * pop_scores
         )
 
         pool = list(candidate_indices[np.argsort(-final_scores)])
@@ -164,7 +172,7 @@ class Recommender:
             for idx, sc in zip(candidate_indices, final_scores, strict=True)
         }
 
-        # Áp dụng Maximal Marginal Relevance (MMR) cho Genre Diversity
+        # Áp dụng MMR-style Genre Diversity Reranking (Diversity Penalty)
         diversity = float(
             self.config.get("diversity_lambda", 0.0)
             if diversity_lambda is None

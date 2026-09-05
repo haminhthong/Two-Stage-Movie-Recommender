@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from scripts.download_data import _safe_extract
 from src.api import app
+from src.data import time_split
 from src.evaluate import dcg, intra_list_diversity
 from src.recommender import Recommender
 from src.train import build_positive_interaction_matrix
@@ -48,6 +49,50 @@ def test_intra_list_diversity_for_identical_genres() -> None:
     """Kiểm tra chỉ số ILD đạt giá trị 0.0 khi các item cùng chung thể loại hoàn toàn."""
     genres_map = {1: {"Action", "Drama"}, 2: {"Action", "Drama"}}
     assert intra_list_diversity([1, 2], genres_map) == 0.0
+
+
+def test_intra_list_diversity_skips_missing_metadata() -> None:
+    """Kiểm tra ILD không bị thổi phồng thành 1.0 khi thiếu metadata thể loại."""
+    # Item 1 và 2 giống nhau (dist=0.0). Item 3 thiếu metadata thể loại -> bỏ qua cặp (1,3) và (2,3)
+    genres_map = {1: {"Action"}, 2: {"Action"}}  # 3 không có trong genres_map
+    assert intra_list_diversity([1, 2, 3], genres_map) == 0.0
+    # Nếu tất cả các cặp đều thiếu metadata thì trả về 0.0 thay vì 1.0
+    assert intra_list_diversity([3, 4], {}) == 0.0
+
+
+def test_time_split_positive_sequence() -> None:
+    """Kiểm tra time_split đảm bảo positive ground truth và không rò rỉ dữ liệu tương lai."""
+    data = pd.DataFrame(
+        {
+            "user_id": [1, 1, 1, 1, 2, 2],
+            "item_id": [101, 102, 103, 104, 201, 202],
+            "rating": [5.0, 4.0, 1.0, 5.0, 4.0, 5.0],  # User 1 có 3 positive, User 2 có 2 positive
+            "timestamp": [100, 200, 250, 300, 100, 200],
+        }
+    )
+    train_df, val_df, test_df = time_split(data, rating_threshold=4.0, min_positive=3)
+
+    # User 1 có >= 3 positive:
+    # Tương tác positive cuối cùng: item 104 tại timestamp 300 -> test_df
+    # Tương tác positive kề cuối: item 102 tại timestamp 200 -> val_df
+    # User 2 chỉ có 2 positive (< 3) -> toàn bộ ở train_df
+    assert len(test_df) == 1
+    assert test_df.iloc[0]["item_id"] == 104
+    assert test_df.iloc[0]["rating"] == 5.0
+
+    assert len(val_df) == 1
+    assert val_df.iloc[0]["item_id"] == 102
+    assert val_df.iloc[0]["rating"] == 4.0
+
+    # Train df cho user 1 chỉ chứa các tương tác có timestamp < 200 (val timestamp)
+    # Tức chỉ có item 101 (ts=100). Item 103 (ts=250) nằm giữa val và test nên không vào train.
+    user_1_train = train_df[train_df["user_id"] == 1]
+    assert list(user_1_train["item_id"]) == [101]
+
+    # User 2 giữ nguyên trong train
+    user_2_train = train_df[train_df["user_id"] == 2]
+    assert len(user_2_train) == 2
+
 
 
 def test_safe_extract_rejects_zip_slip(tmp_path: Path) -> None:

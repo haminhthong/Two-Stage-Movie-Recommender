@@ -72,25 +72,42 @@ def load_movies(path: str | Path = "data/raw/ml-1m/movies.dat") -> pd.DataFrame:
 
 def time_split(
     df: pd.DataFrame,
+    rating_threshold: float = 4.0,
+    min_positive: int = 3,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Phân chia dữ liệu theo chiến lược Leave-Last-Two Per User theo thời gian.
+    """Phân chia dữ liệu theo chiến lược Leave-Last-Two Positive Per User theo thời gian.
 
-    Chiến lược này phản ánh bài toán thế giới thực tốt hơn Random Split vì:
-    - 2 tương tác cuối cùng theo thời gian của mỗi user được tách làm Validation và Test set.
-    - Tất cả các tương tác trước đó được đưa vào Tập Huấn luyện (Train set).
-    - Tránh lộ thông tin tương lai (Data Leakage / Lookahead Bias).
+    Chiến lược này phản ánh bài toán thế giới thực và đồng nhất với mục tiêu Implicit Recommender:
+    - Lọc các tương tác tích cực (rating >= rating_threshold).
+    - Với các user có ít nhất min_positive tương tác tích cực:
+      * Tương tác tích cực mới nhất làm Test set (ground truth tích cực cho Test).
+      * Tương tác tích cực kề cuối làm Validation set (ground truth tích cực cho Validation).
+      * Tất cả tương tác diễn ra trước mốc thời gian của validation set được đưa vào
+        Tập Huấn luyện (Train set), loại bỏ hoàn toàn Lookahead Data Leakage.
+    - Với user có ít hơn min_positive tương tác tích cực, toàn bộ tương tác được giữ trong Train set.
 
     Args:
         df (pd.DataFrame): DataFrame lượt đánh giá đã sắp xếp theo timestamp.
+        rating_threshold (float): Ngưỡng rating để coi là tương tác tích cực. (Mặc định: 4.0)
+        min_positive (int): Số tương tác tích cực tối thiểu để user có mặt trong val/test. (Mặc định: 3)
 
     Returns:
         tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]: (train_df, val_df, test_df)
     """
-    # Tính thứ tự ngược theo thời gian cho từng user (0: tương tác mới nhất, 1: kề cuối, >=2: tương tác cũ)
-    rank = df.groupby("user_id").cumcount(ascending=False)
+    positive_df = df[df["rating"] >= rating_threshold].copy()
+    user_pos_counts = positive_df.groupby("user_id").size()
+    eligible_users = user_pos_counts[user_pos_counts >= min_positive].index
 
-    test_df = df[rank == 0].copy()
-    val_df = df[rank == 1].copy()
-    train_df = df[rank >= 2].copy()
+    pos_eligible = positive_df[positive_df["user_id"].isin(eligible_users)].copy()
+    pos_rank = pos_eligible.groupby("user_id").cumcount(ascending=False)
+
+    test_df = pos_eligible[pos_rank == 0].copy()
+    val_df = pos_eligible[pos_rank == 1].copy()
+
+    val_timestamps = val_df.set_index("user_id")["timestamp"]
+    cutoff_series = df["user_id"].map(val_timestamps)
+    train_mask = cutoff_series.isna() | (df["timestamp"] < cutoff_series)
+    train_df = df[train_mask].copy()
 
     return train_df, val_df, test_df
+

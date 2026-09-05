@@ -1,0 +1,39 @@
+{
+  "k": 10,
+  "evaluated_users": 2000,
+  "seed": 42,
+  "variants": {
+    "Popularity": {
+      "recall@10": 0.052,
+      "ndcg@10": 0.02569482270392108,
+      "intra_list_diversity": 0.7802024735449735,
+      "catalog_coverage": 0.040507696462327845,
+      "p50_latency_ms": 0.3505500062601641,
+      "p95_latency_ms": 0.6916200218256559
+    },
+    "SVD only": {
+      "recall@10": 0.0835,
+      "ndcg@10": 0.04088428595259992,
+      "intra_list_diversity": 0.7572093871252205,
+      "catalog_coverage": 0.20685930326762084,
+      "p50_latency_ms": 16.78560000436846,
+      "p95_latency_ms": 24.138800000946503
+    },
+    "SVD + popularity": {
+      "recall@10": 0.0835,
+      "ndcg@10": 0.04088428595259992,
+      "intra_list_diversity": 0.7572093871252205,
+      "catalog_coverage": 0.20685930326762084,
+      "p50_latency_ms": 16.68079999217298,
+      "p95_latency_ms": 22.678269984317005
+    },
+    "SVD + popularity + MMR": {
+      "recall@10": 0.0835,
+      "ndcg@10": 0.041041037170340466,
+      "intra_list_diversity": 0.7705795811287478,
+      "catalog_coverage": 0.20631920064812315,
+      "p50_latency_ms": 16.845499994815327,
+      "p95_latency_ms": 23.965440022584517
+    }
+  }
+}

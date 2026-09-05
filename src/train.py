@@ -123,16 +123,26 @@ def train_model(
     hits: dict[float, list[float]] = {alpha: [] for alpha in alpha_candidates}
     validation_truth = dict(zip(val_df.user_id, val_df.item_id, strict=True))
 
-    for idx, (user_id, true_item) in enumerate(validation_truth.items()):
-        # Giới hạn 1000 user trong tập val để tăng tốc độ tuning
-        if idx >= 1000 or user_id not in user_map:
-            continue
+    eligible_val_users = np.array(
+        [u for u in validation_truth if u in user_map]
+    )
+    rng = np.random.default_rng(seed)
+    max_val_users = 1000
+    if len(eligible_val_users) > max_val_users:
+        sampled_val_users = rng.choice(
+            eligible_val_users, size=max_val_users, replace=False
+        )
+    else:
+        sampled_val_users = eligible_val_users
 
-        u_idx = user_map[user_id]
+    for user_id in sampled_val_users:
+        user_id_int = int(user_id)
+        true_item = validation_truth[user_id_int]
+        u_idx = user_map[user_id_int]
         latent_scores = item_embeddings @ user_embeddings[u_idx]
 
         # Đánh dấu -inf cho các item người dùng đã xem trong Train set
-        user_seen = seen_by_user.get(user_id, set())
+        user_seen = seen_by_user.get(user_id_int, set())
         if user_seen:
             seen_indices = np.isin(items, list(user_seen))
             latent_scores[seen_indices] = -np.inf
@@ -212,7 +222,7 @@ def train_model(
             "feedback": "implicit_positive",
             "rating_threshold": RATING_THRESHOLD,
             "explicit_zeros_stored": False,
-            "split": "leave_last_two_per_user",
+            "split": "leave_last_two_positive_per_user",
         },
         "positive_interactions": int(interaction_matrix.nnz),
     }

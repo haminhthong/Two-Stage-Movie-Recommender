@@ -1,0 +1,18 @@
+{
+  "recall@10": 0.0835,
+  "ndcg@10": 0.041041037170340466,
+  "catalog_coverage": 0.20631920064812315,
+  "intra_list_diversity": 0.7705795811287478,
+  "popular_item_share": 0.4852,
+  "evaluated_users": 2000,
+  "sampling": "seeded_random_without_replacement",
+  "sampling_seed": 42,
+  "popularity_baseline": {
+    "recall@10": 0.052,
+    "ndcg@10": 0.02569482270392108
+  },
+  "model_lift_over_popularity": {
+    "recall@10": 0.03150000000000001,
+    "ndcg@10": 0.015346214466419386
+  }
+}
