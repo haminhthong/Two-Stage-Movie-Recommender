@@ -1,14 +1,20 @@
-"""Gói module xếp hạng và đa dạng hóa (Stage 2 Ranking & Diversity)."""
+"""Package xếp hạng ứng viên Tầng 2 (Stage 2 Candidate Ranking)."""
 
-from .diversity import DiversityReranker, ScoredRecommendation
-from .features import CandidateFeatureBuilder, CandidateFeatures
+from .dataset import RankDatasetBuilder
+from .features import FEATURE_NAMES, CandidateFeatureBuilder, CandidateFeatures
+from .model import BaseRankModel, LearnedRanker, WeightedFusionRanker
 from .scorer import RankedCandidate, TwoStageRanker
+from .trainer import train_learned_ranker
 
 __all__ = [
-    "CandidateFeatureBuilder",
     "CandidateFeatures",
-    "DiversityReranker",
+    "CandidateFeatureBuilder",
+    "FEATURE_NAMES",
     "RankedCandidate",
-    "ScoredRecommendation",
     "TwoStageRanker",
+    "BaseRankModel",
+    "LearnedRanker",
+    "WeightedFusionRanker",
+    "RankDatasetBuilder",
+    "train_learned_ranker",
 ]

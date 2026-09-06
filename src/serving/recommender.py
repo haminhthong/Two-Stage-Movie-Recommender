@@ -1,78 +1,77 @@
-"""Động cơ điều phối hệ thống gợi ý 2 tầng (Two-Stage Recommendation Engine).
+"""Động cơ gợi ý hai tầng phục vụ thời gian thực (Two-Stage Recommender Engine).
 
-Orchestrator kết nối tuần tự:
-Candidate Retrieval (Stage 1) -> Feature Building -> Two-Stage Ranking -> MMR Diversity Reranking (Stage 2)
-đồng thời hỗ trợ đo lường độ trễ từng chặng, bóc tách điểm số phục vụ debug và sinh giải thích nhẹ (light explanation).
+Điều phối hoàn chỉnh luồng trực tuyến (Online Serving Flow):
+1. Cold-Start Check -> Nếu user chưa có trong hệ thống, chuyển sang ColdStartPolicy.
+2. Stage 1: Candidate Retrieval (Multi-Source / SVD Dot Product) -> Rút trích ~200 ứng viên, lọc phim đã xem.
+3. Stage 2: Feature Engineering & Learned Ranking -> Chấm điểm bằng Stage-2 Learned Ranker (XGBoost)
+   hoặc Heuristic Weighted Fusion Baseline.
+4. Stage 3: MMR Diversity Reranking với `rerank_pool_k = 40` đồng nhất với Offline Validation.
+5. Enrichment: Bổ sung metadata (Title, Genres, Popularity, Scores, Latencies).
 """
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 import time
 from typing import Any
 
-import joblib
 import numpy as np
 
-from ..config import RankingConfig
-from ..ranking.diversity import DiversityReranker, ScoredRecommendation
+from ..artifacts.loader import load_production_bundle
 from ..ranking.features import CandidateFeatureBuilder
+from ..ranking.model import LearnedRanker, WeightedFusionRanker
 from ..ranking.scorer import TwoStageRanker
+from ..reranking.diversity import DiversityReranker, ScoredRecommendation
+from ..retrieval.genre import GenreRetriever
+from ..retrieval.merger import MultiSourceRetriever
+from ..retrieval.popularity import PopularityRetriever
 from ..retrieval.svd import SVDRetriever
-from ..utils import LOGGER, load_json
 from .cold_start import ColdStartPolicy
+
+LOGGER = logging.getLogger("recommender")
 
 
 class TwoStageRecommenderEngine:
-    """Hệ thống gợi ý 2 tầng hoàn chỉnh chuẩn Production."""
+    """Động cơ điều phối toàn diện cho quá trình suy luận gợi ý thời gian thực."""
 
     def __init__(self, model_dir: str | Path | None = None) -> None:
-        """Khởi tạo engine và nạp các artifacts mô hình vào RAM."""
-        project_root = Path(__file__).resolve().parents[2]
-        artifact_dir = Path(model_dir) if model_dir else project_root / "models"
+        """Khởi tạo Engine và nạp Model Artifacts từ bundle production."""
+        target_dir = Path(model_dir) if model_dir else Path("models")
+        bundle = load_production_bundle(target_dir)
 
-        if not artifact_dir.exists():
-            raise FileNotFoundError(
-                f"Thư mục chứa model artifacts không tồn tại: {artifact_dir}. "
-                "Vui lòng chạy 'python -m src.train' để huấn luyện mô hình."
-            )
+        self.user_embeddings: np.ndarray = bundle["user_embeddings"]
+        self.item_embeddings: np.ndarray = bundle["item_embeddings"]
+        self.metadata: dict[str, Any] = bundle["metadata"]
+        self.config: dict[str, Any] = bundle["config"]
+        self.learned_ranker: Any | None = bundle.get("ranker")
+        self.version_name: str = bundle.get("version", "default")
 
-        LOGGER.info("Đang tải model artifacts từ: %s", artifact_dir)
-        self.user_embeddings: np.ndarray = np.load(artifact_dir / "user_emb.npy")
-        self.item_embeddings: np.ndarray = np.load(artifact_dir / "item_emb.npy")
-        self.metadata: dict[str, Any] = joblib.load(artifact_dir / "meta.joblib")
-        self.config: dict[str, Any] = load_json(artifact_dir / "config.json")
-
-        self.users: np.ndarray = self.metadata["users"]
-        self.items: np.ndarray = self.metadata["items"]
-        self.user_map: dict[int, int] = self.metadata["user_map"]
-        self.item_map: dict[int, int] = self.metadata["item_map"]
-        self.popular_items: list[int] = [int(x) for x in self.metadata["popular"]]
+        # Phân rã metadata
+        self.user_map: dict[int, int] = self.metadata.get("user_map", {})
+        self.item_map: dict[int, int] = self.metadata.get("item_map", {})
+        self.items: np.ndarray = np.asarray(self.metadata.get("items", []))
+        self.popular_items: list[int] = [int(x) for x in self.metadata.get("popular", [])]
         self.popularity_counts: dict[int, int] = self.metadata.get("popularity_counts", {})
+        self.log_popularity_scores: dict[int, float] = self.metadata.get("log_popularity", {})
         self.seen_by_user: dict[int, set[int]] = self.metadata.get("seen", {})
         self.genres_map: dict[int, set[str]] = self.metadata.get("genres", {})
         self.titles_map: dict[int, str] = self.metadata.get("titles", {})
         self.user_genre_profiles: dict[int, dict[str, float]] = self.metadata.get(
             "user_genre_profiles", {}
         )
+        self.user_stats: dict[int, dict[str, float]] = self.metadata.get("user_stats", {})
+        self.item_stats: dict[int, dict[str, float]] = self.metadata.get("item_stats", {})
 
-        # Tính toán điểm phổ biến chuẩn hóa dạng log1p (ưu việt hơn rank-linear)
-        max_pop = max((self.popularity_counts.get(i, 0) for i in self.items), default=1)
-        max_log_pop = float(np.log1p(max_pop)) if max_pop > 0 else 1.0
-        self.log_popularity_scores: dict[int, float] = {
-            int(i): float(np.log1p(self.popularity_counts.get(i, 0)) / max_log_pop)
-            for i in self.items
-        }
-
-        # Lưu thêm linear rank để hỗ trợ tính tương thích ngược
+        # Linear rank để tương thích ngược
         max_denom = max(1, len(self.popular_items) - 1)
         self.popularity_rank: dict[int, float] = {
             int(item): 1.0 - (rank / max_denom)
             for rank, item in enumerate(self.popular_items)
         }
 
-        # Khởi tạo các module con
-        self.retriever = SVDRetriever(
+        # Khởi tạo Stage 1 Retrievers
+        self.svd_retriever = SVDRetriever(
             user_embeddings=self.user_embeddings,
             item_embeddings=self.item_embeddings,
             user_map=self.user_map,
@@ -81,34 +80,88 @@ class TwoStageRecommenderEngine:
             seen_by_user=self.seen_by_user,
         )
 
+        self.popularity_retriever = PopularityRetriever(
+            popular_items=self.popular_items,
+            popularity_scores=self.log_popularity_scores,
+            seen_by_user=self.seen_by_user,
+        )
+
+        self.genre_retriever = GenreRetriever(
+            popular_items=self.popular_items,
+            genre_map=self.genres_map,
+            user_genre_profiles=self.user_genre_profiles,
+            popularity_scores=self.log_popularity_scores,
+            seen_by_user=self.seen_by_user,
+        )
+
+        self.multi_retriever = MultiSourceRetriever(
+            retrievers={
+                "svd": (self.svd_retriever, int(self.config.get("svd_candidate_k", 150))),
+                "popularity": (self.popularity_retriever, int(self.config.get("popularity_candidate_k", 50))),
+                "genre": (self.genre_retriever, int(self.config.get("genre_candidate_k", 50))),
+            }
+        )
+
+        # Mặc định sử dụng SVD retriever (hoặc MultiSource nếu config chỉ định)
+        use_multi = bool(self.config.get("multi_source_retrieval", False))
+        self.retriever = self.multi_retriever if use_multi else self.svd_retriever
+
+        # Khởi tạo Feature Builder
         self.feature_builder = CandidateFeatureBuilder(
             popularity_scores=self.log_popularity_scores,
             genre_map=self.genres_map,
             user_genre_profiles=self.user_genre_profiles,
+            user_stats=self.user_stats,
+            item_stats=self.item_stats,
         )
 
+        # Đọc siêu tham số
         default_alpha = float(self.config.get("latent_weight", 0.9))
         default_lambda = float(self.config.get("diversity_lambda", 0.05))
+        self.rerank_pool_k = int(self.config.get("rerank_pool_k", 40))
 
-        self.ranker = TwoStageRanker(
-            latent_weight=default_alpha,
-            genre_affinity_weight=0.0,
-        )
+        # Khởi tạo Stage 2 Ranker
+        if self.learned_ranker is not None:
+            self.ranker = TwoStageRanker(
+                rank_model=self.learned_ranker,
+                latent_weight=default_alpha,
+            )
+        else:
+            self.ranker = TwoStageRanker(
+                latent_weight=default_alpha,
+                genre_affinity_weight=float(self.config.get("genre_affinity_weight", 0.0)),
+            )
 
+        # Khởi tạo Stage 3 MMR Reranker với rerank_pool_k đồng nhất
         self.diversity_reranker = DiversityReranker(
             genre_map=self.genres_map,
             default_lambda=default_lambda,
+            default_rerank_pool_k=self.rerank_pool_k,
         )
 
+        # Cold-Start Policy
         self.cold_start_policy = ColdStartPolicy(
             popular_items=self.popular_items,
             genre_map=self.genres_map,
             title_map=self.titles_map,
             popularity_counts=self.popularity_counts,
+            log_popularity=self.log_popularity_scores,
         )
 
-        if len(self.item_embeddings) != len(self.items):
-            raise ValueError("Kích thước Item Embeddings và danh sách Items không khớp!")
+        self.default_alpha = default_alpha
+        self.default_diversity_lambda = default_lambda
+
+    def cold_start_recommend(
+        self,
+        preferred_genres: list[str] | None = None,
+        k: int = 10,
+        seen_items: set[int] | None = None,
+    ) -> tuple[list[int], str, list[dict[str, Any]]]:
+        """Entrypoint cho người dùng mới."""
+        item_ids, strategy = self.cold_start_policy.get_recommendations(
+            preferred_genres=preferred_genres, k=k, seen_items=seen_items
+        )
+        return item_ids, strategy, self.cold_start_policy.enrich_items(item_ids)
 
     def recommend_detailed(
         self,
@@ -116,13 +169,13 @@ class TwoStageRecommenderEngine:
         k: int = 10,
         diversity_lambda: float | None = None,
         latent_weight: float | None = None,
+        recent_item_ids: list[int] | None = None,
     ) -> dict[str, Any]:
-        """Tạo gợi ý chi tiết kèm thống kê thời gian từng chặng và phân tích điểm số."""
+        """Tạo gợi ý chi tiết kèm đo độ trễ và phân tích điểm số từng chặng."""
         t_start = time.perf_counter()
 
-        # Kiểm tra kịch bản Cold Start
+        # Kiểm tra Cold Start
         if user_id not in self.user_map:
-            t_cs = time.perf_counter()
             item_ids, strategy = self.cold_start_policy.get_recommendations(
                 k=k, seen_items=self.seen_by_user.get(user_id, set())
             )
@@ -143,11 +196,21 @@ class TwoStageRecommenderEngine:
         # Stage 1: Candidate Retrieval
         t_ret_start = time.perf_counter()
         candidate_k = int(self.config.get("candidate_k", 200))
-        candidates = self.retriever.retrieve(user_id=user_id, k=candidate_k, filter_seen=True)
+
+        # Hỗ trợ fresh user behavior: bổ sung recent_item_ids vào seen
+        if recent_item_ids:
+            seen_combined = self.seen_by_user.get(user_id, set()) | set(recent_item_ids)
+            # Tạm thời gán seen mở rộng
+            orig_seen = self.retriever.seen_by_user.get(user_id, set())
+            self.retriever.seen_by_user[user_id] = seen_combined
+            candidates = self.retriever.retrieve(user_id=user_id, k=candidate_k, filter_seen=True)
+            self.retriever.seen_by_user[user_id] = orig_seen
+        else:
+            candidates = self.retriever.retrieve(user_id=user_id, k=candidate_k, filter_seen=True)
+
         retrieval_ms = (time.perf_counter() - t_ret_start) * 1000.0
 
         if not candidates:
-            # Fallback nếu không còn candidate khả dụng
             item_ids, strategy = self.cold_start_policy.get_recommendations(k=k)
             total_ms = (time.perf_counter() - t_start) * 1000.0
             return {
@@ -162,18 +225,19 @@ class TwoStageRecommenderEngine:
                 },
             }
 
-        # Stage 2: Feature Building & Ranking
+        # Stage 2: Feature Engineering & Ranking
         t_rank_start = time.perf_counter()
         features = self.feature_builder.build_features(candidates, user_id=user_id)
         ranked_candidates = self.ranker.rank(features, latent_weight_override=latent_weight)
         ranking_ms = (time.perf_counter() - t_rank_start) * 1000.0
 
-        # Stage 2.5: MMR-Style Diversity Reranking
+        # Stage 3: MMR Diversity Reranking với rerank_pool_k đồng nhất (P0.2 fix)
         t_div_start = time.perf_counter()
         final_recommendations: list[ScoredRecommendation] = self.diversity_reranker.rerank(
             ranked_candidates,
             k=k,
             diversity_lambda_override=diversity_lambda,
+            rerank_pool_k=self.rerank_pool_k,
         )
         diversity_ms = (time.perf_counter() - t_div_start) * 1000.0
         total_ms = (time.perf_counter() - t_start) * 1000.0
@@ -184,18 +248,17 @@ class TwoStageRecommenderEngine:
             genres = sorted(list(self.genres_map.get(item_id, set())))
             pop_cnt = int(self.popularity_counts.get(item_id, 0))
 
-            explanation = (
-                f"Rank #{rank_idx + 1}: Matched your latent preference profile; "
-                f"diversified across {', '.join(genres[:2]) if genres else 'genres'}."
-            )
+            pop_sc = rec.features.popularity_score if rec.features else 0.0
+            lat_sc = rec.features.latent_score if rec.features else 0.0
+            aff_sc = rec.features.genre_affinity if rec.features else 0.0
 
-            scores_debug = {
-                "retrieval": round(float(rec.features.latent_score if rec.features else 0.0), 4),
-                "popularity": round(float(rec.features.popularity_score if rec.features else 0.0), 4),
-                "ranking": round(float(rec.relevance_score), 4),
-                "diversity_penalty": round(float(rec.diversity_penalty), 4),
-                "final": round(float(rec.final_score), 4),
-            }
+            # Explanation
+            if aff_sc > 0.3:
+                explanation = f"High genre affinity with your taste in {genres[:2]}"
+            elif lat_sc > 0.6:
+                explanation = "Strong collaborative match with similar users"
+            else:
+                explanation = "Popular title with broad community acclaim"
 
             enriched_items.append(
                 {
@@ -203,7 +266,13 @@ class TwoStageRecommenderEngine:
                     "title": self.titles_map.get(item_id, f"Movie {item_id}"),
                     "genres": genres,
                     "interaction_count": pop_cnt,
-                    "scores": scores_debug,
+                    "scores": {
+                        "retrieval": round(lat_sc, 4),
+                        "popularity": round(pop_sc, 4),
+                        "ranking": round(rec.relevance_score, 4),
+                        "diversity_penalty": round(rec.diversity_penalty, 4),
+                        "final": round(rec.final_score, 4),
+                    },
                     "explanation": explanation,
                 }
             )
@@ -226,24 +295,34 @@ class TwoStageRecommenderEngine:
         k: int = 10,
         diversity_lambda: float | None = None,
         latent_weight: float | None = None,
+        recent_item_ids: list[int] | None = None,
     ) -> list[int]:
-        """Tạo danh sách top-K ID phim cho một người dùng (nhẹ, nhanh cho benchmark/eval)."""
-        res = self.recommend_detailed(
+        """Tạo danh sách top-K ID phim gợi ý cho user."""
+        detail = self.recommend_detailed(
             user_id=user_id,
             k=k,
             diversity_lambda=diversity_lambda,
             latent_weight=latent_weight,
+            recent_item_ids=recent_item_ids,
         )
-        return [item["item_id"] for item in res["items"]]
+        return [item["item_id"] for item in detail["items"]]
 
     def recommend_with_metadata(
         self,
         user_id: int,
         k: int = 10,
         diversity_lambda: float | None = None,
+        latent_weight: float | None = None,
+        recent_item_ids: list[int] | None = None,
     ) -> list[dict[str, Any]]:
-        """Tạo danh sách gợi ý kèm metadata định dạng chuẩn cho API client."""
-        res = self.recommend_detailed(user_id=user_id, k=k, diversity_lambda=diversity_lambda)
+        """Tạo danh sách gợi ý kèm metadata chuẩn UI."""
+        detail = self.recommend_detailed(
+            user_id=user_id,
+            k=k,
+            diversity_lambda=diversity_lambda,
+            latent_weight=latent_weight,
+            recent_item_ids=recent_item_ids,
+        )
         return [
             {
                 "item_id": item["item_id"],
@@ -251,22 +330,5 @@ class TwoStageRecommenderEngine:
                 "genres": item["genres"],
                 "interaction_count": item["interaction_count"],
             }
-            for item in res["items"]
-        ]
-
-    def recommend_cold_start(
-        self, preferred_genres: list[str] | None = None, k: int = 10
-    ) -> list[dict[str, Any]]:
-        """Gợi ý cho người dùng mới qua ColdStartPolicy."""
-        item_ids, _ = self.cold_start_policy.get_recommendations(
-            preferred_genres=preferred_genres, k=k
-        )
-        return [
-            {
-                "item_id": item_id,
-                "title": self.titles_map.get(item_id, f"Movie {item_id}"),
-                "genres": sorted(list(self.genres_map.get(item_id, set()))),
-                "interaction_count": int(self.popularity_counts.get(item_id, 0)),
-            }
-            for item_id in item_ids
+            for item in detail["items"]
         ]

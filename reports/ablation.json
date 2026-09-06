@@ -1,71 +1,56 @@
 {
-  "k": 10,
-  "evaluated_users": 2000,
-  "seed": 42,
-  "variants": {
-    "Popularity Baseline": {
-      "recall@10": 0.052,
-      "hit_rate@10": 0.052,
-      "ndcg@10": 0.02569482270392108,
-      "mrr@10": 0.017949007936507937,
-      "intra_list_diversity": 0.7802024735449735,
-      "catalog_coverage": 0.040507696462327845,
-      "retrieval_p50_ms": 0.27614999271463603,
-      "retrieval_p95_ms": 0.7221899970318189,
-      "ranking_p50_ms": 0.0,
-      "ranking_p95_ms": 0.0,
-      "diversity_p50_ms": 0.0,
-      "diversity_p95_ms": 0.0,
-      "p50_latency_ms": 0.27614999271463603,
-      "p95_latency_ms": 0.7221899970318189
-    },
-    "SVD only": {
-      "recall@10": 0.0835,
-      "hit_rate@10": 0.0835,
-      "ndcg@10": 0.04088428595259992,
-      "mrr@10": 0.028223611111111113,
-      "intra_list_diversity": 0.7572093871252205,
-      "catalog_coverage": 0.20685930326762084,
-      "retrieval_p50_ms": 0.6670000002486631,
-      "retrieval_p95_ms": 1.284929976100102,
-      "ranking_p50_ms": 1.196099998196587,
-      "ranking_p95_ms": 2.575339993927628,
-      "diversity_p50_ms": 0.024399982066825032,
-      "diversity_p95_ms": 0.0501000031363219,
-      "p50_latency_ms": 1.9082000071648508,
-      "p95_latency_ms": 3.7511600108700804
-    },
-    "SVD + popularity": {
-      "recall@10": 0.0835,
-      "hit_rate@10": 0.0835,
-      "ndcg@10": 0.04087294915845854,
-      "mrr@10": 0.028211111111111107,
-      "intra_list_diversity": 0.7585289902998236,
-      "catalog_coverage": 0.20415879017013233,
-      "retrieval_p50_ms": 0.822000001790002,
-      "retrieval_p95_ms": 1.5429800172569228,
-      "ranking_p50_ms": 1.5685000107623637,
-      "ranking_p95_ms": 3.3570299754501316,
-      "diversity_p50_ms": 0.027900008717551827,
-      "diversity_p95_ms": 0.06450499640777707,
-      "p50_latency_ms": 2.516199994715862,
-      "p95_latency_ms": 4.899024992482737
-    },
-    "SVD + popularity + MMR": {
-      "recall@10": 0.0815,
-      "hit_rate@10": 0.0815,
-      "ndcg@10": 0.040687436728063645,
-      "mrr@10": 0.028431349206349203,
-      "intra_list_diversity": 0.7862772795414462,
-      "catalog_coverage": 0.20307858493113692,
-      "retrieval_p50_ms": 0.788349992944859,
-      "retrieval_p95_ms": 1.47466999333119,
-      "ranking_p50_ms": 1.2913999962620437,
-      "ranking_p95_ms": 2.7908300049602985,
-      "diversity_p50_ms": 15.07244999811519,
-      "diversity_p95_ms": 25.507460003427692,
-      "p50_latency_ms": 17.45534999645315,
-      "p95_latency_ms": 28.90885501692537
-    }
+  "Popularity Baseline": {
+    "recall@10": 0.039,
+    "intra_list_diversity": 0.7832306084656085,
+    "p50_latency_ms": 1.0624999995343387,
+    "p95_latency_ms": 1.547410000966919
+  },
+  "SVD Only": {
+    "recall@10": 0.085,
+    "intra_list_diversity": 0.7572513756613757,
+    "p50_latency_ms": 1.3477000011334894,
+    "p95_latency_ms": 1.692569997430837
+  },
+  "SVD + Popularity (Weighted Baseline)": {
+    "recall@10": 0.084,
+    "intra_list_diversity": 0.7609061904761905,
+    "p50_latency_ms": 1.334050000878051,
+    "p95_latency_ms": 1.619479997498274
+  },
+  "Stage-2 Learned Ranker": {
+    "recall@10": 0.05,
+    "intra_list_diversity": 0.7319518165784832,
+    "p50_latency_ms": 11.762400001316564,
+    "p95_latency_ms": 93.67589499815948
+  },
+  "Full Pipeline (Learned + MMR)": {
+    "recall@10": 0.043,
+    "intra_list_diversity": 0.8739569576719577,
+    "p50_latency_ms": 9.59694999983185,
+    "p95_latency_ms": 32.00148999840163
+  },
+  "MMR Pool 20": {
+    "recall@10": 0.041,
+    "intra_list_diversity": 0.8279831040564374,
+    "p50_latency_ms": 8.862200000294251,
+    "p95_latency_ms": 28.58674499875632
+  },
+  "MMR Pool 40": {
+    "recall@10": 0.043,
+    "intra_list_diversity": 0.8739569576719577,
+    "p50_latency_ms": 11.150450001878198,
+    "p95_latency_ms": 53.14709500216848
+  },
+  "MMR Pool 100": {
+    "recall@10": 0.041,
+    "intra_list_diversity": 0.912362733686067,
+    "p50_latency_ms": 18.073549999826355,
+    "p95_latency_ms": 94.81794500115936
+  },
+  "MMR Pool 200": {
+    "recall@10": 0.039,
+    "intra_list_diversity": 0.9478359435626103,
+    "p50_latency_ms": 35.71245000057388,
+    "p95_latency_ms": 135.53362999973606
   }
 }

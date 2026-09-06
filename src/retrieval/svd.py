@@ -1,8 +1,6 @@
 """Triển khai trích xuất ứng viên bằng phân rã nhân tử ẩn (TruncatedSVD Latent Dot Product).
 
 Stage 1 Candidate Retriever sử dụng tích vô hướng trên không gian vector nhúng.
-Độ phức tạp hiện tại: Exact brute-force dot product O(num_items * dim).
-Lộ trình mở rộng: Chỉ mục tìm kiếm tiệm cận ANN (FAISS / ScaNN / HNSW).
 """
 
 from __future__ import annotations
@@ -40,8 +38,6 @@ class SVDRetriever(CandidateRetriever):
         self.item_map = item_map
         self.items = np.asarray(items)
         self.seen_by_user = seen_by_user or {}
-
-        # Mảng tra cứu nhanh boolean mask hoặc hash map
         self._num_items = len(self.items)
 
     def retrieve(
@@ -66,7 +62,7 @@ class SVDRetriever(CandidateRetriever):
         user_idx = self.user_map[user_id]
         user_vec = self.user_embeddings[user_idx]
 
-        # Brute-force dot product: O(num_items * dim)
+        # Dot product: O(num_items * dim)
         latent_scores = self.item_embeddings @ user_vec
 
         # Lọc bỏ sản phẩm đã xem (Seen Filter guardrail)
@@ -93,6 +89,9 @@ class SVDRetriever(CandidateRetriever):
             Candidate(
                 item_id=int(self.items[idx]),
                 retrieval_score=float(latent_scores[idx]),
+                retrieval_source="svd",
+                retrieval_rank=rank,
+                source_scores={"svd": float(latent_scores[idx])},
             )
-            for idx in partition_indices
+            for rank, idx in enumerate(partition_indices)
         ]

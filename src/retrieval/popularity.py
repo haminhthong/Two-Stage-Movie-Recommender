@@ -1,7 +1,4 @@
-"""Triển khai trích xuất ứng viên dựa trên độ phổ biến toàn cục (Global Popularity Retriever).
-
-Được sử dụng làm Baseline so sánh và làm chính sách Fallback cho trường hợp Cold-Start.
-"""
+"""Triển khai trích xuất ứng viên dựa trên độ phổ biến toàn cục (Global Popularity Retriever)."""
 
 from __future__ import annotations
 
@@ -42,7 +39,7 @@ class PopularityRetriever(CandidateRetriever):
             filter_seen (bool): Có loại bỏ item trong train hay không.
 
         Returns:
-            list[Candidate]: Danh sách Candidate theo độ phổ biến.
+            list[Candidate]: Danh sách Candidate theo độ phổ biến kèm metadata.
         """
         if k <= 0:
             return []
@@ -50,11 +47,21 @@ class PopularityRetriever(CandidateRetriever):
         seen = self.seen_by_user.get(user_id, set()) if filter_seen else set()
         candidates: list[Candidate] = []
 
+        rank = 0
         for item_id in self.popular_items:
             if item_id in seen:
                 continue
-            score = self.popularity_scores.get(item_id, 0.0)
-            candidates.append(Candidate(item_id=item_id, retrieval_score=float(score)))
+            score = float(self.popularity_scores.get(item_id, 0.0))
+            candidates.append(
+                Candidate(
+                    item_id=item_id,
+                    retrieval_score=score,
+                    retrieval_source="popularity",
+                    retrieval_rank=rank,
+                    source_scores={"popularity": score},
+                )
+            )
+            rank += 1
             if len(candidates) >= k:
                 break
 

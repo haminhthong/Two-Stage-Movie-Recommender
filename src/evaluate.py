@@ -1,14 +1,14 @@
-"""Module đánh giá chỉ số Offline (Offline Metrics Evaluation) cho hệ thống gợi ý.
+"""Module đánh giá chỉ số Offline (Offline Metrics Evaluation) và nghiên cứu đóng góp từng thành phần (Ablation Study).
 
-Các chỉ số đo lường toàn diện bao gồm:
-1. HitRate@K / Recall@K: Tỷ lệ tìm đúng item thực sự tương tác trong top-K (trong leave-one-out, Recall@K == HitRate@K).
-2. NDCG@K: Đánh giá độ chính xác xếp hạng có trọng số vị trí.
-3. MRR@K (Mean Reciprocal Rank): Nghịch đảo vị trí xuất hiện đầu tiên của item đúng.
-4. Catalog Coverage: Tỷ lệ phim trong toàn bộ kho được hệ thống khai phá gợi ý.
-5. Intra-List Diversity (ILD): Độ đa dạng thể loại trung bình trong cùng danh sách top-K (chống Filter Bubble).
-6. Novelty@K: Thông tin tự thân trung bình -log2(P(item)) đo lường mức độ bất ngờ, ít thiên lệch phổ biến.
-7. Long-Tail Exposure: Tỷ lệ phơi nhiễm phân bổ theo phân khúc Head (Top 10%), Mid (Next 40%), Tail (Bottom 50%).
-8. Stage-Level Latency Benchmark: Phân tích độ trễ p50/p95 từng tầng (Retrieval, Ranking, MMR, Total).
+Cung cấp:
+1. Đánh giá phễu hoàn chỉnh (Multi-Stage Funnel Evaluation):
+   - Stage 1: Target-in-Catalog Rate, Candidate Recall@50/100/200
+   - Stage 2: Ranker Recall@10, Ranker NDCG@10
+   - Stage 3 (Final Post-MMR): Recall@10, NDCG@10, MRR@10, ILD, Coverage, Novelty
+   - Lift: Báo cáo cả `absolute_gain` và `relative_lift`
+2. Nghiên cứu thực nghiệm (Ablation Benchmark):
+   - So sánh Popularity vs SVD vs Heuristic Weighted Fusion vs Stage-2 Learned Ranker vs Full Pipeline
+   - Nghiên cứu xấp xỉ MMR Candidate Pool: Pool 20 vs 40 vs 100 vs 200 (Recall vs ILD vs Latency).
 """
 
 from __future__ import annotations
@@ -19,7 +19,9 @@ from typing import Any
 
 import numpy as np
 
-from .data import load_ratings, time_split
+from .data import load_ratings, temporal_split_four_way, time_split
+from .evaluation.evaluator import FullFunnelEvaluator
+from .evaluation.latency import summarize_latencies
 from .evaluation.metrics import (
     compute_long_tail_distribution,
     compute_user_coverage,
@@ -29,330 +31,178 @@ from .evaluation.metrics import (
     mrr_at_k,
     novelty_at_k,
 )
+from .ranking.scorer import TwoStageRanker
 from .recommender import Recommender
 from .utils import LOGGER, save_json, setup_logging
 
 
 def evaluate_recommender(
     k: int = 10,
-    max_users: int | None = None,  # Mặc định None để đánh giá toàn bộ users tập Test
+    max_users: int | None = None,
     output_path: str = "reports/test_metrics.json",
     seed: int = 42,
 ) -> dict[str, Any]:
-    """Đánh giá toàn diện hệ thống gợi ý trên tập Test (Official Evaluation).
-
-    Giao thức đánh giá:
-    - Đánh giá trên toàn bộ người dùng hợp lệ trong tập Test (~6,035 users).
-    - Tập Test hoàn toàn độc lập, không tham gia vào tuning siêu tham số.
-
-    Args:
-        k (int): Số lượng item top-K gợi ý.
-        max_users (int | None): Số lượng user đánh giá (None = toàn bộ user hợp lệ).
-        output_path (str): Đường dẫn lưu báo cáo.
-        seed (int): Seed ngẫu nhiên tái lập nếu lấy mẫu.
-
-    Returns:
-        dict[str, Any]: Báo cáo chỉ số offline.
-    """
+    """Đánh giá toàn diện hệ thống gợi ý trên tập Test (Official Funnel Evaluation)."""
     setup_logging()
-    LOGGER.info("Bắt đầu đánh giá mô hình offline trên tập Test với Top-K = %d...", k)
+    LOGGER.info("Bắt đầu đánh giá mô hình offline theo phễu từng tầng trên tập Test với Top-K = %d...", k)
 
     df_ratings = load_ratings()
-    _, _, test_df = time_split(df_ratings)
-
-    # Ground truth từ tập Test: {user_id: true_item_id} (chỉ gồm rating >= 4.0)
+    _, _, _, test_df = temporal_split_four_way(df_ratings)
     test_truth = dict(zip(test_df.user_id, test_df.item_id, strict=True))
 
     recommender = Recommender()
-    genres_map = recommender.metadata.get("genres", {})
-    popular_items: list[int] = recommender.metadata["popular"]
-    popular_set_100 = set(popular_items[:100])
-    total_catalog_size = len(recommender.metadata["items"])
+    engine = recommender._engine
 
-    # Phân chia Head (10%), Mid (40%), Tail (50%)
-    n_items = len(popular_items)
-    head_cutoff = max(1, int(n_items * 0.10))
-    mid_cutoff = max(head_cutoff + 1, int(n_items * 0.50))
-    head_set = set(popular_items[:head_cutoff])
-    mid_set = set(popular_items[head_cutoff:mid_cutoff])
-    tail_set = set(popular_items[mid_cutoff:])
+    evaluator = FullFunnelEvaluator(
+        engine=engine,
+        catalog_items=recommender.metadata["items"],
+        popular_items=recommender.metadata["popular"],
+        popularity_counts=recommender.metadata.get("popularity_counts", {}),
+        genre_map=recommender.metadata.get("genres", {}),
+    )
 
-    # Tính xác suất phổ biến cho chỉ số Novelty
-    pop_counts = recommender.metadata.get("popularity_counts", {})
-    total_interactions = sum(pop_counts.values())
-    catalog_prob = {
-        item_id: float((pop_counts.get(item_id, 0) + 1) / (total_interactions + total_catalog_size))
-        for item_id in recommender.metadata["items"]
+    summary = evaluator.evaluate(test_truth=test_truth, max_users=max_users, k=k, seed=seed)
+
+    final_stage = summary["funnel_stage_metrics"]["stage_3_final_post_mmr"]
+    pop_baseline = summary["popularity_baseline"]
+    lift = summary["model_lift_over_popularity"]
+
+    flat_summary = {
+        f"recall@{k}": final_stage[f"recall@{k}"],
+        f"hit_rate@{k}": final_stage[f"recall@{k}"],
+        f"ndcg@{k}": final_stage[f"ndcg@{k}"],
+        f"mrr@{k}": final_stage[f"mrr@{k}"],
+        "catalog_coverage": final_stage["catalog_coverage"],
+        "user_coverage": final_stage["user_coverage"],
+        "intra_list_diversity": final_stage["intra_list_diversity"],
+        f"novelty@{k}": final_stage[f"novelty@{k}"],
+        "target_in_catalog_rate": summary["target_in_catalog_rate"],
+        "cold_item_test_share": summary["cold_item_test_share"],
+        "evaluated_users": summary["evaluated_users"],
+        "evaluation_protocol": summary["evaluation_protocol"],
+        "funnel_stage_metrics": summary["funnel_stage_metrics"],
+        "popularity_baseline": pop_baseline,
+        "model_lift_over_popularity": lift,
+        "latencies_ms": summary["latencies_ms"],
     }
 
-    eligible_users = np.array(
-        [
-            int(user_id)
-            for user_id in test_truth
-            if int(user_id) in recommender.metadata["user_map"]
-        ]
-    )
-    if max_users is not None and len(eligible_users) > max_users:
-        rng = np.random.default_rng(seed)
-        eligible_users = rng.choice(eligible_users, size=max_users, replace=False)
-
-    total_eval_users = len(eligible_users)
-    LOGGER.info("Số lượng người dùng đánh giá chính thức: %d", total_eval_users)
-
-    recall_scores: list[float] = []
-    ndcg_scores: list[float] = []
-    mrr_scores: list[float] = []
-    diversity_scores: list[float] = []
-    novelty_scores: list[float] = []
-    all_recommendations: list[list[int]] = []
-
-    recommended_items_unique: set[int] = set()
-    total_recommendations_count: int = 0
-    popular_recommendations_count: int = 0
-
-    # Baseline Popularity
-    pop_recalls: list[float] = []
-    pop_ndcgs: list[float] = []
-    pop_mrrs: list[float] = []
-    pop_novelties: list[float] = []
-
-    for user_id in eligible_users:
-        u_id = int(user_id)
-        true_item = test_truth[u_id]
-
-        preds = recommender.recommend(u_id, k=k)
-        all_recommendations.append(preds)
-        recommended_items_unique.update(preds)
-        total_recommendations_count += len(preds)
-        popular_recommendations_count += sum(1 for item in preds if item in popular_set_100)
-
-        hit = hit_rate_at_k(preds, true_item)
-        recall_scores.append(hit)
-        ndcg_scores.append(dcg(preds.index(true_item)) if hit else 0.0)
-        mrr_scores.append(mrr_at_k(preds, true_item))
-        diversity_scores.append(intra_list_diversity(preds, genres_map))
-        novelty_scores.append(novelty_at_k(preds, catalog_prob))
-
-        # Popularity baseline (loại seen)
-        seen = recommender.metadata.get("seen", {}).get(u_id, set())
-        pop_preds = [item for item in popular_items if item not in seen][:k]
-        pop_hit = hit_rate_at_k(pop_preds, true_item)
-        pop_recalls.append(pop_hit)
-        pop_ndcgs.append(dcg(pop_preds.index(true_item)) if pop_hit else 0.0)
-        pop_mrrs.append(mrr_at_k(pop_preds, true_item))
-        pop_novelties.append(novelty_at_k(pop_preds, catalog_prob))
-
-    exposure = compute_long_tail_distribution(
-        all_recommendations, head_set, mid_set, tail_set
-    )
-    user_cov = compute_user_coverage(all_recommendations, k=k)
-
-    mean_recall = float(np.mean(recall_scores))
-    mean_ndcg = float(np.mean(ndcg_scores))
-    mean_mrr = float(np.mean(mrr_scores))
-    mean_div = float(np.mean(diversity_scores))
-    mean_novelty = float(np.mean(novelty_scores))
-
-    pop_mean_recall = float(np.mean(pop_recalls))
-    pop_mean_ndcg = float(np.mean(pop_ndcgs))
-    pop_mean_mrr = float(np.mean(pop_mrrs))
-    pop_mean_novelty = float(np.mean(pop_novelties))
-
-    metrics_summary = {
-        f"recall@{k}": mean_recall,
-        f"hit_rate@{k}": mean_recall,  # Leave-one-out equivalence
-        f"ndcg@{k}": mean_ndcg,
-        f"mrr@{k}": mean_mrr,
-        "catalog_coverage": float(len(recommended_items_unique) / total_catalog_size),
-        "user_coverage": user_cov,
-        "intra_list_diversity": mean_div,
-        f"novelty@{k}": mean_novelty,
-        "popular_item_share": float(
-            popular_recommendations_count / max(1, total_recommendations_count)
-        ),
-        "long_tail_exposure": exposure,
-        "evaluated_users": total_eval_users,
-        "evaluation_protocol": (
-            "full_eligible_test_users" if max_users is None else f"sampled_{max_users}_users"
-        ),
-        "popularity_baseline": {
-            f"recall@{k}": pop_mean_recall,
-            f"hit_rate@{k}": pop_mean_recall,
-            f"ndcg@{k}": pop_mean_ndcg,
-            f"mrr@{k}": pop_mean_mrr,
-            f"novelty@{k}": pop_mean_novelty,
-        },
-        "model_lift_over_popularity": {
-            f"recall@{k}": mean_recall - pop_mean_recall,
-            f"ndcg@{k}": mean_ndcg - pop_mean_ndcg,
-            f"mrr@{k}": mean_mrr - pop_mean_mrr,
-            f"novelty@{k}": mean_novelty - pop_mean_novelty,
-        },
-    }
-
-    save_json(output_path, metrics_summary)
-    LOGGER.info("Kết quả đánh giá Official Test Metrics: %s", metrics_summary)
-    return metrics_summary
+    save_json(output_path, flat_summary)
+    LOGGER.info("Đã xuất kết quả đánh giá phễu chính thức tới '%s'!", output_path)
+    return flat_summary
 
 
 def run_ablation_study(
     k: int = 10,
-    max_users: int = 2000,
+    max_users: int = 1000,
     output_path: str = "reports/ablation.json",
     seed: int = 42,
 ) -> dict[str, Any]:
-    """Nghiên cứu đóng góp từng thành phần và đo lường độ trễ chi tiết từng giai đoạn.
-
-    So sánh 4 cấu hình:
-    1. Popularity Baseline
-    2. SVD only (latent_weight=1.0, diversity_lambda=0.0)
-    3. SVD + Popularity (latent_weight=alpha, diversity_lambda=0.0)
-    4. SVD + Popularity + MMR (Full Two-Stage Pipeline)
-    """
+    """Nghiên cứu đóng góp từng thành phần và benchmark kích thước pool MMR."""
     setup_logging()
-    LOGGER.info(
-        "Bắt đầu chạy Ablation Study & Stage-level Latency Benchmark trên %d người dùng...",
-        max_users,
-    )
+    LOGGER.info("Bắt đầu chạy Ablation Study & MMR Candidate Pool Benchmark trên %d người dùng...", max_users)
 
     df_ratings = load_ratings()
-    _, _, test_df = time_split(df_ratings)
+    _, _, _, test_df = temporal_split_four_way(df_ratings)
     test_truth = dict(zip(test_df.user_id, test_df.item_id, strict=True))
 
     recommender = Recommender()
+    engine = recommender._engine
     genres_map = recommender.metadata.get("genres", {})
-    total_catalog_size = len(recommender.metadata["items"])
     popular_items = recommender.metadata["popular"]
 
-    eligible_users = np.array(
-        [
-            int(user_id)
-            for user_id in test_truth
-            if int(user_id) in recommender.metadata["user_map"]
-        ]
-    )
+    eligible_users = [u for u in test_truth if u in engine.user_map]
     rng = np.random.default_rng(seed)
     if len(eligible_users) > max_users:
-        eligible_users = rng.choice(eligible_users, size=max_users, replace=False)
+        eligible_users = list(rng.choice(eligible_users, size=max_users, replace=False))
 
-    variants: dict[str, dict[str, Any]] = {
-        "Popularity Baseline": {},
-        "SVD only": {},
-        "SVD + popularity": {},
-        "SVD + popularity + MMR": {},
-    }
+    # Pre-extract candidates và features cho 1000 users 1 lần duy nhất
+    LOGGER.info("Tiền trích xuất candidates & features cho %d ablation users...", len(eligible_users))
+    user_data: dict[int, dict[str, Any]] = {}
+    cand_k = engine.config.get("candidate_k", 200)
 
-    engine = recommender._engine
-    best_alpha = float(recommender.config.get("latent_weight", 0.9))
-
-    for variant_name in variants:
-        recalls: list[float] = []
-        ndcgs: list[float] = []
-        mrrs: list[float] = []
-        diversities: list[float] = []
-        unique_items: set[int] = set()
-
-        retrieval_latencies: list[float] = []
-        ranking_latencies: list[float] = []
-        diversity_latencies: list[float] = []
-        total_latencies: list[float] = []
-
-        for user_id in eligible_users:
-            u_id = int(user_id)
-            true_item = test_truth[u_id]
-
-            if variant_name == "Popularity Baseline":
-                t0 = time.perf_counter()
-                seen = recommender.metadata.get("seen", {}).get(u_id, set())
-                preds = [item for item in popular_items if item not in seen][:k]
-                tot_ms = (time.perf_counter() - t0) * 1000.0
-                ret_ms, rank_ms, div_ms = tot_ms, 0.0, 0.0
-            elif variant_name == "SVD only":
-                res = engine.recommend_detailed(
-                    user_id=u_id, k=k, diversity_lambda=0.0, latent_weight=1.0
-                )
-                preds = [item["item_id"] for item in res["items"]]
-                ret_ms = res["latencies_ms"]["retrieval"]
-                rank_ms = res["latencies_ms"]["ranking"]
-                div_ms = res["latencies_ms"]["diversity"]
-                tot_ms = res["latencies_ms"]["total"]
-            elif variant_name == "SVD + popularity":
-                res = engine.recommend_detailed(
-                    user_id=u_id, k=k, diversity_lambda=0.0, latent_weight=best_alpha
-                )
-                preds = [item["item_id"] for item in res["items"]]
-                ret_ms = res["latencies_ms"]["retrieval"]
-                rank_ms = res["latencies_ms"]["ranking"]
-                div_ms = res["latencies_ms"]["diversity"]
-                tot_ms = res["latencies_ms"]["total"]
-            elif variant_name == "SVD + popularity + MMR":
-                res = engine.recommend_detailed(user_id=u_id, k=k)
-                preds = [item["item_id"] for item in res["items"]]
-                ret_ms = res["latencies_ms"]["retrieval"]
-                rank_ms = res["latencies_ms"]["ranking"]
-                div_ms = res["latencies_ms"]["diversity"]
-                tot_ms = res["latencies_ms"]["total"]
-            else:
-                preds = []
-                ret_ms, rank_ms, div_ms, tot_ms = 0.0, 0.0, 0.0, 0.0
-
-            retrieval_latencies.append(ret_ms)
-            ranking_latencies.append(rank_ms)
-            diversity_latencies.append(div_ms)
-            total_latencies.append(tot_ms)
-
-            unique_items.update(preds)
-            hit = hit_rate_at_k(preds, true_item)
-            recalls.append(hit)
-            ndcgs.append(dcg(preds.index(true_item)) if hit else 0.0)
-            mrrs.append(mrr_at_k(preds, true_item))
-            diversities.append(intra_list_diversity(preds, genres_map))
-
-        variants[variant_name] = {
-            f"recall@{k}": float(np.mean(recalls)),
-            f"hit_rate@{k}": float(np.mean(recalls)),
-            f"ndcg@{k}": float(np.mean(ndcgs)),
-            f"mrr@{k}": float(np.mean(mrrs)),
-            "intra_list_diversity": float(np.mean(diversities)),
-            "catalog_coverage": float(len(unique_items) / total_catalog_size),
-            "retrieval_p50_ms": float(np.percentile(retrieval_latencies, 50)),
-            "retrieval_p95_ms": float(np.percentile(retrieval_latencies, 95)),
-            "ranking_p50_ms": float(np.percentile(ranking_latencies, 50)),
-            "ranking_p95_ms": float(np.percentile(ranking_latencies, 95)),
-            "diversity_p50_ms": float(np.percentile(diversity_latencies, 50)),
-            "diversity_p95_ms": float(np.percentile(diversity_latencies, 95)),
-            "p50_latency_ms": float(np.percentile(total_latencies, 50)),
-            "p95_latency_ms": float(np.percentile(total_latencies, 95)),
+    for u_id in eligible_users:
+        cands = engine.retriever.retrieve(u_id, k=cand_k, filter_seen=True)
+        feats = engine.feature_builder.build_features(cands, user_id=u_id)
+        user_data[u_id] = {
+            "cands": cands,
+            "feats": feats,
+            "seen": engine.seen_by_user.get(u_id, set()),
+            "true_item": test_truth[u_id],
         }
 
-        LOGGER.info(
-            "Hoàn thành variant '%s': Recall=%.4f, NDCG=%.4f, ILD=%.4f, Cov=%.2f%% | p50=%.2fms (ret=%.2f, rank=%.2f, div=%.2f)",
-            variant_name,
-            variants[variant_name][f"recall@{k}"],
-            variants[variant_name][f"ndcg@{k}"],
-            variants[variant_name]["intra_list_diversity"],
-            variants[variant_name]["catalog_coverage"] * 100,
-            variants[variant_name]["p50_latency_ms"],
-            variants[variant_name]["retrieval_p50_ms"],
-            variants[variant_name]["ranking_p50_ms"],
-            variants[variant_name]["diversity_p50_ms"],
-        )
+    # Pre-rank learned candidates
+    if engine.learned_ranker is not None:
+        for u_id, d in user_data.items():
+            d["learned_ranked"] = engine.ranker.rank(d["feats"])
 
-    results = {
-        "k": k,
-        "evaluated_users": len(eligible_users),
-        "seed": seed,
-        "variants": variants,
+    variants = {
+        "Popularity Baseline": {"type": "pop"},
+        "SVD Only": {"type": "weighted", "alpha": 1.0},
+        "SVD + Popularity (Weighted Baseline)": {"type": "weighted", "alpha": 0.85},
+        "Stage-2 Learned Ranker": {"type": "learned_no_div"},
+        "Full Pipeline (Learned + MMR)": {"type": "learned_mmr", "div_lambda": 0.05, "pool_k": 40},
+        "MMR Pool 20": {"type": "learned_mmr", "div_lambda": 0.05, "pool_k": 20},
+        "MMR Pool 40": {"type": "learned_mmr", "div_lambda": 0.05, "pool_k": 40},
+        "MMR Pool 100": {"type": "learned_mmr", "div_lambda": 0.05, "pool_k": 100},
+        "MMR Pool 200": {"type": "learned_mmr", "div_lambda": 0.05, "pool_k": 200},
     }
+
+    results: dict[str, Any] = {}
+
+    for var_name, var_cfg in variants.items():
+        recalls: list[float] = []
+        ilds: list[float] = []
+        latencies: list[float] = []
+        v_type = var_cfg["type"]
+
+        for u_id in eligible_users:
+            t0 = time.perf_counter()
+            d = user_data[u_id]
+            true_item = d["true_item"]
+
+            if v_type == "pop":
+                seen = d["seen"]
+                preds = [it for it in popular_items if it not in seen][:k]
+            elif v_type == "weighted":
+                alpha = var_cfg["alpha"]
+                scorer = TwoStageRanker(latent_weight=alpha)
+                ranked = scorer.rank(d["feats"])
+                preds = [r.item_id for r in ranked[:k]]
+            elif v_type == "learned_no_div":
+                ranked = d.get("learned_ranked", engine.ranker.rank(d["feats"]))
+                preds = [r.item_id for r in ranked[:k]]
+            elif v_type == "learned_mmr":
+                ranked = d.get("learned_ranked", engine.ranker.rank(d["feats"]))
+                lam = var_cfg["div_lambda"]
+                pool_k = var_cfg["pool_k"]
+                final_recs = engine.diversity_reranker.rerank(
+                    ranked, k=k, diversity_lambda_override=lam, rerank_pool_k=pool_k
+                )
+                preds = [r.item_id for r in final_recs]
+
+            t_ms = (time.perf_counter() - t0) * 1000.0
+            latencies.append(t_ms)
+            recalls.append(hit_rate_at_k(preds, true_item))
+            ilds.append(intra_list_diversity(preds, genres_map))
+
+        lat_summary = summarize_latencies(latencies)
+        results[var_name] = {
+            "recall@10": float(np.mean(recalls)),
+            "intra_list_diversity": float(np.mean(ilds)),
+            "p50_latency_ms": lat_summary.p50_ms,
+            "p95_latency_ms": lat_summary.p95_ms,
+        }
+
     save_json(output_path, results)
-    LOGGER.info("Đã lưu kết quả Ablation Study vào: %s", output_path)
+    LOGGER.info("Kết quả Ablation Study & Pool Benchmark: %s", results)
     return results
 
 
 def main() -> None:
-    """Hàm main thực thi script đánh giá và ablation khi gọi từ CLI."""
+    import sys
     evaluate_recommender()
     run_ablation_study()
+    sys.exit(0)
 
 
 if __name__ == "__main__":

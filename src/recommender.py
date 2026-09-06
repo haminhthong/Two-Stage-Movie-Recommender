@@ -48,6 +48,7 @@ class Recommender:
         k: int = 10,
         diversity_lambda: float | None = None,
         latent_weight: float | None = None,
+        recent_item_ids: list[int] | None = None,
     ) -> list[int]:
         """Tạo danh sách top-K gợi ý cá nhân hóa cho một người dùng."""
         if hasattr(self, "_engine"):
@@ -56,6 +57,7 @@ class Recommender:
                 k=k,
                 diversity_lambda=diversity_lambda,
                 latent_weight=latent_weight,
+                recent_item_ids=recent_item_ids,
             )
         # Fallback cho mock/unit test __new__
         return []
@@ -66,6 +68,7 @@ class Recommender:
         k: int = 10,
         diversity_lambda: float | None = None,
         latent_weight: float | None = None,
+        recent_item_ids: list[int] | None = None,
     ) -> dict[str, Any]:
         """Tạo gợi ý chi tiết kèm phân tích điểm và đo lường độ trễ."""
         if hasattr(self, "_engine"):
@@ -74,6 +77,7 @@ class Recommender:
                 k=k,
                 diversity_lambda=diversity_lambda,
                 latent_weight=latent_weight,
+                recent_item_ids=recent_item_ids,
             )
         return {"user_id": user_id, "strategy": "mock", "items": []}
 
@@ -82,11 +86,15 @@ class Recommender:
         user_id: int,
         k: int = 10,
         diversity_lambda: float | None = None,
+        recent_item_ids: list[int] | None = None,
     ) -> list[dict[str, Any]]:
         """Tạo gợi ý đầy đủ thông tin metadata (Title, Genres, Popularity Count)."""
         if hasattr(self, "_engine"):
             return self._engine.recommend_with_metadata(
-                user_id=user_id, k=k, diversity_lambda=diversity_lambda
+                user_id=user_id,
+                k=k,
+                diversity_lambda=diversity_lambda,
+                recent_item_ids=recent_item_ids,
             )
 
         # Hỗ trợ mock instance trong unit test
@@ -110,7 +118,7 @@ class Recommender:
     ) -> list[dict[str, Any]]:
         """Gợi ý thông minh cho Người dùng mới (Cold-Start User) dựa trên sở thích thể loại."""
         if hasattr(self, "_engine"):
-            return self._engine.recommend_cold_start(preferred_genres=preferred_genres, k=k)
+            return self._engine.cold_start_recommend(preferred_genres=preferred_genres, k=k)[2]
 
         # Hỗ trợ mock instance trong unit test
         policy = ColdStartPolicy(

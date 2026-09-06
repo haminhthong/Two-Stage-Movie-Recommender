@@ -2,7 +2,8 @@
 
 Sử dụng khung ứng dụng FastAPI với Pydantic schemas để tự động kiểm tra kiểu dữ liệu,
 sinh tài liệu OpenAPI (Swagger UI), trả về chiến lược phục vụ (strategy observability),
-phân tích điểm số (debug scores) và giải thích đề xuất (light explanations).
+phân tích điểm số (debug scores) và giải thích đề xuất (light explanations),
+đồng thời hỗ trợ nhận diện hành vi phiên gần đây (recent session items).
 """
 
 from __future__ import annotations
@@ -18,10 +19,11 @@ from .utils import load_json
 app = FastAPI(
     title="Two-Stage Recommendation System API",
     description=(
-        "REST API gợi ý phim cá nhân hóa 2 tầng (TruncatedSVD + Log1p Popularity + "
-        "MMR Genre Diversity Reranking) kèm giải thích và giám sát chiến lược phục vụ."
+        "REST API gợi ý phim cá nhân hóa 2 tầng (TruncatedSVD Retrieval + "
+        "Stage-2 Learned Ranker + MMR Genre Diversity Reranking) kèm giải thích "
+        "và giám sát chiến lược phục vụ thời gian thực."
     ),
-    version="2.1.0",
+    version="4.0.0",
 )
 
 _recommender: Recommender | None = None
@@ -122,7 +124,7 @@ def health_check() -> dict[str, Any]:
     return {
         "status": "ok",
         "model_ready": True,
-        "model_version": recommender.config.get("version", "v2.1.0"),
+        "model_version": recommender.config.get("version", "v4.0.0"),
     }
 
 
@@ -143,18 +145,26 @@ def get_recommendation(
     include_scores: bool = Query(
         False, description="Đặt True để trả về bảng phân rã điểm chi tiết và độ trễ"
     ),
+    recent_items: str | None = Query(
+        None, description="Danh sách ID phim xem gần đây, phân tách bởi dấu phẩy (ví dụ: '1,2,3')"
+    ),
 ) -> dict[str, Any]:
     """Tạo danh sách gợi ý phim cá nhân hóa cho một người dùng cụ thể.
 
     - Người dùng đã biết: Trả về kết quả Two-Stage Personalized (`strategy="two_stage_personalized"`).
     - Người dùng mới: Tự động fallback sang Popularity (`strategy="cold_start_popularity"`).
     """
+    recent_item_ids: list[int] | None = None
+    if recent_items:
+        recent_item_ids = [int(x.strip()) for x in recent_items.split(",") if x.strip().isdigit()]
+
     try:
         recommender = get_recommender()
         detailed_res = recommender.recommend_detailed(
             user_id=user_id,
             k=k,
             diversity_lambda=diversity,
+            recent_item_ids=recent_item_ids,
         )
     except (OSError, ValueError, KeyError) as exc:
         raise HTTPException(
@@ -184,7 +194,7 @@ def get_recommendation(
         "strategy": strategy,
         "items": output_items,
         "includes_metadata": include_metadata,
-        "model_version": recommender.config.get("version", "v2.1.0"),
+        "model_version": recommender.config.get("version", "v4.0.0"),
         "latencies_ms": detailed_res["latencies_ms"] if include_scores else None,
     }
 
@@ -200,42 +210,17 @@ def cold_start_recommendation(
     """Gợi ý phim thông minh cho Người dùng mới (Cold Start) dựa trên thể loại yêu thích."""
     try:
         recommender = get_recommender()
-        item_ids, strategy = recommender._engine.cold_start_policy.get_recommendations(
+        item_ids, strategy, enriched = recommender._engine.cold_start_recommend(
             preferred_genres=body.preferred_genres, k=body.k
         )
-        enriched = recommender._engine.cold_start_policy.enrich_items(item_ids)
-    except Exception as exc:
+    except (OSError, ValueError, KeyError) as exc:
         raise HTTPException(
-            status_code=503, detail="Không thể khởi tạo gợi ý cold-start."
+            status_code=503, detail="Mô hình gợi ý chưa sẵn sàng hoặc gặp lỗi artifact."
         ) from exc
 
     return {
         "strategy": strategy,
         "preferred_genres": body.preferred_genres or [],
         "items": enriched,
-        "model_version": recommender.config.get("version", "v2.1.0"),
+        "model_version": recommender.config.get("version", "v4.0.0"),
     }
-
-
-@app.get("/metrics", tags=["System Performance"])
-def get_metrics() -> dict[str, Any]:
-    """Trả về kết quả báo cáo Official Offline Evaluation Metrics mới nhất."""
-    try:
-        return load_json("reports/test_metrics.json")
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=404,
-            detail="Chưa có báo cáo metrics. Vui lòng chạy 'python -m src.evaluate' trước.",
-        ) from None
-
-
-@app.get("/ablation", tags=["System Performance"])
-def get_ablation() -> dict[str, Any]:
-    """Trả về kết quả báo cáo Ablation Study và Stage-Level Latency Benchmark."""
-    try:
-        return load_json("reports/ablation.json")
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=404,
-            detail="Chưa có báo cáo ablation. Vui lòng chạy 'python -m src.evaluate' trước.",
-        ) from None
