@@ -10,12 +10,11 @@ Tuân thủ hợp đồng dữ liệu:
 
 from __future__ import annotations
 
-from typing import Sequence
 import numpy as np
 import pandas as pd
 
-from ..retrieval.base import Candidate, CandidateRetriever
-from .features import CandidateFeatureBuilder, CandidateFeatures
+from ..retrieval.base import CandidateRetriever
+from .features import CandidateFeatureBuilder, N_FEATURES
 
 
 class RankDatasetBuilder:
@@ -24,16 +23,19 @@ class RankDatasetBuilder:
     def __init__(
         self,
         feature_builder: CandidateFeatureBuilder,
-        candidate_k: int = 100,
+        candidate_k: int = 200,
     ) -> None:
         """Khởi tạo RankDatasetBuilder.
 
         Args:
             feature_builder: Bộ trích xuất CandidateFeatureBuilder.
-            candidate_k: Số lượng ứng viên trích xuất cho mỗi user để tạo mẫu negative.
+            candidate_k: Kích thước candidate contract dùng cho train/dev/test/serving.
         """
         self.feature_builder = feature_builder
-        self.candidate_k = candidate_k
+        if candidate_k <= 0:
+            raise ValueError("candidate_k phải lớn hơn 0.")
+        self.candidate_k = int(candidate_k)
+        self.last_build_stats: dict[str, float | int] = {}
 
     def build_dataset(
         self,
@@ -56,7 +58,19 @@ class RankDatasetBuilder:
                 y (N_samples,),
                 groups (N_users,) - số lượng mẫu cho mỗi user query group.
         """
-        user_target_map = dict(zip(rank_train_df["user_id"], rank_train_df["item_id"], strict=True))
+        required_columns = {"user_id", "item_id"}
+        missing = required_columns.difference(rank_train_df.columns)
+        if missing:
+            raise ValueError(f"rank_train_df thiếu cột: {sorted(missing)}")
+
+        user_target_map = dict(
+            zip(rank_train_df["user_id"], rank_train_df["item_id"], strict=True)
+        )
+        target_timestamps = (
+            rank_train_df.set_index("user_id")["timestamp"].to_dict()
+            if "timestamp" in rank_train_df.columns
+            else {}
+        )
         users = list(user_target_map.keys())
 
         if max_users is not None and len(users) > max_users:
@@ -66,29 +80,29 @@ class RankDatasetBuilder:
         X_rows: list[np.ndarray] = []
         y_rows: list[int] = []
         group_counts: list[int] = []
+        users_with_candidates = 0
+        retrieved_targets = 0
 
         for u_id in users:
             target_item = user_target_map[u_id]
             candidates = retriever.retrieve(user_id=u_id, k=self.candidate_k, filter_seen=True)
             if not candidates:
                 continue
+            users_with_candidates += 1
 
-            # Kiểm tra xem target_item có lọt vào candidates không
-            cand_item_ids = {c.item_id for c in candidates}
-            if target_item not in cand_item_ids:
-                # Bổ sung target item vào pool để luôn có positive sample cho ranker học phân biệt
-                candidates = list(candidates)
-                candidates.append(
-                    Candidate(
-                        item_id=target_item,
-                        retrieval_score=0.0,
-                        retrieval_source="ground_truth",
-                        retrieval_rank=len(candidates),
-                        source_scores={},
-                    )
-                )
+            # Nếu Stage 1 miss target thì ghi nhận thất bại và bỏ cả query.
+            # Tuyệt đối không inject ground truth vì production cũng không thấy nó.
+            if target_item not in {candidate.item_id for candidate in candidates}:
+                continue
+            retrieved_targets += 1
 
-            features = self.feature_builder.build_features(candidates, user_id=u_id)
+            features = self.feature_builder.build_features(
+                candidates,
+                user_id=u_id,
+                as_of_timestamp=(
+                    int(target_timestamps[u_id]) if u_id in target_timestamps else None
+                ),
+            )
             if not features:
                 continue
 
@@ -99,8 +113,19 @@ class RankDatasetBuilder:
                 X_rows.append(feat.to_feature_vector())
                 y_rows.append(1 if feat.item_id == target_item else 0)
 
-        X = np.vstack(X_rows).astype(np.float32) if X_rows else np.empty((0, 15), dtype=np.float32)
+        X = np.vstack(X_rows).astype(np.float32) if X_rows else np.empty((0, N_FEATURES), dtype=np.float32)
         y = np.array(y_rows, dtype=np.int32)
         groups = np.array(group_counts, dtype=np.int32)
+
+        self.last_build_stats = {
+            "rank_train_users": len(users),
+            "users_with_candidates": users_with_candidates,
+            "retrieved_target_users": retrieved_targets,
+            "target_retrieval_rate": (
+                retrieved_targets / len(users) if users else 0.0
+            ),
+            "query_groups": len(group_counts),
+            "candidate_rows": len(y_rows),
+        }
 
         return X, y, groups

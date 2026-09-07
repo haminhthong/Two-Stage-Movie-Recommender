@@ -1,54 +1,58 @@
-"""Trích xuất và chuẩn hóa đặc trưng ứng viên (Candidate Feature Engineering).
+"""Feature contract cho Stage 2.
 
-Kết hợp đa chiều:
-1. User features (hoạt động, số lượng positive, điểm trung bình)
-2. Item features (phổ biến, đánh giá trung bình, số thể loại, percentile)
-3. User x Item interaction (raw latent score, normalized score, rank, genre affinity)
-4. Multi-source signals (svd, popularity, genre, source count)
-
-Tối ưu hiệu năng: Tiền tính toán percentile từ điển O(1) và sinh ma trận 2D trực tiếp.
+Mọi feature retrieval giữ semantics riêng của source. Không dùng một
+``retrieval_score`` chung để so sánh trực tiếp SVD, popularity và genre.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Sequence
+
 import numpy as np
+import pandas as pd
 
 from ..retrieval.base import Candidate
 
+FEATURE_SCHEMA_VERSION = "rank-features-v1"
 FEATURE_NAMES = [
-    "raw_latent_score",
-    "normalized_latent_score",
-    "retrieval_rank_percentile",
-    "popularity_score",
-    "genre_affinity",
+    "svd_score",
+    "svd_rank",
+    "popularity_retrieval_score",
+    "popularity_rank",
+    "genre_retrieval_score",
+    "genre_rank",
+    "rrf_score",
+    "source_count",
     "user_positive_count",
+    "user_interaction_count",
     "user_avg_rating",
+    "genre_entropy",
+    "item_positive_count",
     "item_rating_count",
     "item_avg_rating",
-    "item_genre_count",
     "item_popularity_percentile",
-    "retrieved_by_svd",
-    "retrieved_by_popularity",
-    "retrieved_by_genre",
-    "source_count",
+    "item_genre_count",
+    "genre_affinity",
+    "genre_overlap_count",
 ]
+N_FEATURES = len(FEATURE_NAMES)
 
 
 @dataclass(frozen=True)
 class CandidateFeatures:
-    """Tập hợp đặc trưng của một ứng viên tại Tầng 2.
+    """Đặc trưng của một candidate tại một snapshot thời gian.
 
-    Duy trì 100% tương thích ngược các trường cốt lõi (item_id, latent_score, popularity_score, genre_affinity).
+    Ba trường đầu được giữ nguyên để các baseline cũ vẫn khởi tạo được object.
+    Vector model dùng feature contract 19 cột ở ``FEATURE_NAMES``.
     """
 
     item_id: int
-    latent_score: float           # Normalized latent score [0, 1]
-    popularity_score: float       # Log1p popularity score [0, 1]
+    latent_score: float
+    popularity_score: float
     genre_affinity: float = 0.0
 
-    # Extended Stage-2 Features
+    # Trường tương thích ngược và metadata hỗ trợ debug.
     raw_latent_score: float = 0.0
     retrieval_rank: int = 0
     retrieval_rank_percentile: float = 0.0
@@ -58,37 +62,54 @@ class CandidateFeatures:
     item_avg_rating: float = 3.5
     item_genre_count: int = 1
     item_popularity_percentile: float = 0.5
-    retrieved_by_svd: float = 1.0
+    retrieved_by_svd: float = 0.0
     retrieved_by_popularity: float = 0.0
     retrieved_by_genre: float = 0.0
     source_count: float = 1.0
 
+    # Feature contract mới, source-specific và group-aware.
+    svd_score: float = 0.0
+    svd_rank: int = 0
+    popularity_retrieval_score: float = 0.0
+    popularity_rank: int = 0
+    genre_retrieval_score: float = 0.0
+    genre_rank: int = 0
+    rrf_score: float = 0.0
+    user_interaction_count: int = 0
+    genre_entropy: float = 0.0
+    item_positive_count: int = 0
+    genre_overlap_count: int = 0
+
     def to_feature_vector(self) -> np.ndarray:
-        """Chuyển đổi thành vector số học dùng cho Scikit-Learn hoặc XGBoost."""
+        """Chuyển object thành vector float32 đúng thứ tự feature contract."""
         return np.array(
             [
-                self.raw_latent_score,
-                self.latent_score,
-                self.retrieval_rank_percentile,
-                self.popularity_score,
-                self.genre_affinity,
-                float(self.user_positive_count),
-                self.user_avg_rating,
-                float(self.item_rating_count),
-                self.item_avg_rating,
-                float(self.item_genre_count),
-                self.item_popularity_percentile,
-                self.retrieved_by_svd,
-                self.retrieved_by_popularity,
-                self.retrieved_by_genre,
+                self.svd_score,
+                self.svd_rank,
+                self.popularity_retrieval_score,
+                self.popularity_rank,
+                self.genre_retrieval_score,
+                self.genre_rank,
+                self.rrf_score,
                 self.source_count,
+                self.user_positive_count,
+                self.user_interaction_count,
+                self.user_avg_rating,
+                self.genre_entropy,
+                self.item_positive_count,
+                self.item_rating_count,
+                self.item_avg_rating,
+                self.item_popularity_percentile,
+                self.item_genre_count,
+                self.genre_affinity,
+                self.genre_overlap_count,
             ],
             dtype=np.float32,
         )
 
 
 class CandidateFeatureBuilder:
-    """Xây dựng và chuẩn hóa vector đặc trưng phong phú cho danh sách ứng viên."""
+    """Sinh feature theo pool và có thể tính lại tại một mốc ``as_of``."""
 
     def __init__(
         self,
@@ -97,128 +118,254 @@ class CandidateFeatureBuilder:
         user_genre_profiles: dict[int, dict[str, float]] | None = None,
         user_stats: dict[int, dict[str, float]] | None = None,
         item_stats: dict[int, dict[str, float]] | None = None,
+        interactions_df: pd.DataFrame | None = None,
+        rating_threshold: float = 4.0,
     ) -> None:
-        """Khởi tạo CandidateFeatureBuilder."""
-        self.popularity_scores = popularity_scores
+        self.popularity_scores = {int(key): float(value) for key, value in popularity_scores.items()}
         self.genre_map = genre_map or {}
         self.user_genre_profiles = user_genre_profiles or {}
         self.user_stats = user_stats or {}
         self.item_stats = item_stats or {}
+        self.interactions_df = interactions_df
+        self.rating_threshold = float(rating_threshold)
+        self._snapshot_cache: dict[int, tuple[dict, dict, dict, dict]] = {}
 
-        # Tiền tính toán O(1) lookups cho percentile và genre count
-        pop_values = sorted(self.popularity_scores.values())
-        num_pop = max(1, len(pop_values))
-        arr_pop = np.array(pop_values)
-
+        values = np.asarray(sorted(self.popularity_scores.values()), dtype=np.float32)
         self.pop_percentiles: dict[int, float] = {}
-        for it_id, sc in self.popularity_scores.items():
-            idx = int(np.searchsorted(arr_pop, sc))
-            self.pop_percentiles[it_id] = float(idx / num_pop)
-
-        self.item_genre_counts: dict[int, int] = {
-            it_id: max(1, len(genres)) for it_id, genres in self.genre_map.items()
+        if values.size:
+            for item_id, score in self.popularity_scores.items():
+                self.pop_percentiles[item_id] = float(
+                    np.searchsorted(values, score, side="right") / values.size
+                )
+        self.item_genre_counts = {
+            int(item_id): max(1, len(genres))
+            for item_id, genres in self.genre_map.items()
         }
+
+    def _snapshot_statistics(
+        self,
+        as_of_timestamp: int | None,
+    ) -> tuple[dict[int, dict[str, float]], dict[int, dict[str, float]], dict[int, float], dict[int, dict[str, float]]]:
+        """Tạo user/item stats chỉ từ interaction có timestamp nhỏ hơn ``as_of``."""
+        if as_of_timestamp is None or self.interactions_df is None:
+            return (
+                self.user_stats,
+                self.item_stats,
+                self.popularity_scores,
+                self.user_genre_profiles,
+            )
+
+        cutoff = int(as_of_timestamp)
+        if cutoff in self._snapshot_cache:
+            return self._snapshot_cache[cutoff]
+
+        history = self.interactions_df[self.interactions_df["timestamp"] < cutoff]
+        positive = history[history["rating"] >= self.rating_threshold]
+
+        user_stats: dict[int, dict[str, float]] = {}
+        for user_id, group in history.groupby("user_id"):
+            positive_count = int((group["rating"] >= self.rating_threshold).sum())
+            user_stats[int(user_id)] = {
+                "positive_count": float(positive_count),
+                "interaction_count": float(len(group)),
+                "avg_rating": float(group["rating"].mean()),
+            }
+
+        item_stats: dict[int, dict[str, float]] = {}
+        for item_id, group in history.groupby("item_id"):
+            item_stats[int(item_id)] = {
+                "positive_count": float((group["rating"] >= self.rating_threshold).sum()),
+                "rating_count": float(len(group)),
+                "avg_rating": float(group["rating"].mean()),
+            }
+
+        counts = positive.groupby("item_id").size().to_dict()
+        max_count = max(counts.values(), default=1)
+        max_log = max(float(np.log1p(max_count)), 1.0)
+        popularity = {
+            int(item_id): float(np.log1p(count) / max_log)
+            for item_id, count in counts.items()
+        }
+
+        profiles: dict[int, dict[str, float]] = {}
+        for user_id, group in positive.groupby("user_id"):
+            counts_by_genre: dict[str, int] = {}
+            total = 0
+            for item_id in group["item_id"]:
+                for genre in self.genre_map.get(int(item_id), set()):
+                    counts_by_genre[genre] = counts_by_genre.get(genre, 0) + 1
+                    total += 1
+            if total:
+                profiles[int(user_id)] = {
+                    genre: count / total for genre, count in counts_by_genre.items()
+                }
+
+        snapshot = (user_stats, item_stats, popularity, profiles)
+        self._snapshot_cache[cutoff] = snapshot
+        return snapshot
+
+    @staticmethod
+    def _normalise_source_scores(
+        candidates: Sequence[Candidate],
+        source: str,
+    ) -> np.ndarray:
+        """Min-max normalize score trong đúng source; candidate khác source nhận 0."""
+        values = np.asarray(
+            [
+                float(candidate.source_scores[source])
+                if source in candidate.source_scores
+                else np.nan
+                for candidate in candidates
+            ],
+            dtype=np.float32,
+        )
+        present = np.isfinite(values)
+        if not present.any():
+            return np.zeros(len(candidates), dtype=np.float32)
+        low = float(np.nanmin(values))
+        high = float(np.nanmax(values))
+        if high - low <= 1e-9:
+            values[present] = 1.0
+        else:
+            values[present] = (values[present] - low) / (high - low)
+        values[~present] = 0.0
+        return values
 
     def build_feature_matrix(
         self,
         candidates: Sequence[Candidate],
         user_id: int | None = None,
+        as_of_timestamp: int | None = None,
     ) -> np.ndarray:
-        """Sinh trực tiếp ma trận 2D (N, 15) float32 liên tục trong RAM để tối ưu tốc độ inference."""
+        """Sinh ma trận ``(N, 19)`` không dùng dữ liệu sau mốc ``as_of``."""
         n = len(candidates)
         if n == 0:
-            return np.empty((0, 15), dtype=np.float32)
+            return np.empty((0, N_FEATURES), dtype=np.float32)
 
-        raw_scores = np.fromiter((c.retrieval_score for c in candidates), dtype=np.float32, count=n)
-        min_s = float(raw_scores.min())
-        max_s = float(raw_scores.max())
-        denom = max_s - min_s
-        norm_latent = (raw_scores - min_s) / denom if denom > 1e-9 else np.ones(n, dtype=np.float32)
+        user_stats, item_stats, popularity_scores, profiles = self._snapshot_statistics(
+            as_of_timestamp
+        )
+        svd_scores = np.asarray(
+            [
+                float(candidate.source_scores.get("svd", 0.0))
+                for candidate in candidates
+            ],
+            dtype=np.float32,
+        )
+        user_profile = profiles.get(user_id, {}) if user_id is not None else {}
+        user_stat = user_stats.get(user_id, {}) if user_id is not None else {}
+        user_positive_count = float(user_stat.get("positive_count", 0.0))
+        user_interaction_count = float(user_stat.get("interaction_count", user_positive_count))
+        user_avg_rating = float(user_stat.get("avg_rating", 3.8))
+        genre_entropy = _genre_entropy(user_profile)
 
-        user_profile = self.user_genre_profiles.get(user_id, {}) if user_id is not None else {}
-        u_stat = self.user_stats.get(user_id, {}) if user_id is not None else {}
-        user_pos_count = float(u_stat.get("positive_count", 10.0))
-        user_avg_rat = float(u_stat.get("avg_rating", 3.8))
+        matrix = np.zeros((n, N_FEATURES), dtype=np.float32)
+        for index, candidate in enumerate(candidates):
+            item_id = int(candidate.item_id)
+            source_scores = candidate.source_scores
+            # Đây là điểm retrieval của source popularity, không phải prior item.
+            # Candidate không được popularity retriever trả về phải nhận 0 ở cột này;
+            # prior theo thời gian đã được phản ánh riêng qua percentile/count.
+            pop_score = float(source_scores.get("popularity", 0.0))
+            genre_score = float(source_scores.get("genre", 0.0))
+            item_genres = self.genre_map.get(item_id, set())
+            affinity = (
+                sum(user_profile.get(genre, 0.0) for genre in item_genres)
+                / max(1, len(item_genres))
+                if user_profile and item_genres
+                else 0.0
+            )
+            overlap = sum(1 for genre in item_genres if user_profile.get(genre, 0.0) > 0)
+            item_stat = item_stats.get(item_id, {})
+            item_rating_count = float(item_stat.get("rating_count", 0.0))
+            item_positive_count = float(item_stat.get("positive_count", 0.0))
+            item_avg_rating = float(item_stat.get("avg_rating", 3.5))
+            source_count = len(source_scores) or 1
 
-        mat = np.empty((n, 15), dtype=np.float32)
-        inv_pool = 1.0 / n
-
-        for i, cand in enumerate(candidates):
-            item_id = cand.item_id
-            pop_sc = self.popularity_scores.get(item_id, 0.0)
-
-            # Genre affinity
-            affinity = 0.0
-            if user_profile:
-                item_genres = self.genre_map.get(item_id)
-                if item_genres:
-                    overlap_sum = sum(user_profile.get(g, 0.0) for g in item_genres)
-                    affinity = overlap_sum / len(item_genres)
-
-            i_stat = self.item_stats.get(item_id, {})
-            item_cnt = float(i_stat.get("rating_count", 50.0))
-            item_avg_rat = float(i_stat.get("avg_rating", 3.5))
-            genre_cnt = float(self.item_genre_counts.get(item_id, 1))
-            pop_perc = self.pop_percentiles.get(item_id, 0.5)
-
-            src_scores = cand.source_scores
-            by_svd = 1.0 if (src_scores and "svd" in src_scores) or cand.retrieval_source == "svd" else 0.0
-            by_pop = 1.0 if (src_scores and "popularity" in src_scores) or cand.retrieval_source == "popularity" else 0.0
-            by_genre = 1.0 if (src_scores and "genre" in src_scores) or cand.retrieval_source == "genre" else 0.0
-            src_cnt = float(len(src_scores)) if src_scores else 1.0
-
-            mat[i, 0] = raw_scores[i]
-            mat[i, 1] = norm_latent[i]
-            mat[i, 2] = 1.0 - (i * inv_pool)
-            mat[i, 3] = pop_sc
-            mat[i, 4] = affinity
-            mat[i, 5] = user_pos_count
-            mat[i, 6] = user_avg_rat
-            mat[i, 7] = item_cnt
-            mat[i, 8] = item_avg_rat
-            mat[i, 9] = genre_cnt
-            mat[i, 10] = pop_perc
-            mat[i, 11] = by_svd
-            mat[i, 12] = by_pop
-            mat[i, 13] = by_genre
-            mat[i, 14] = src_cnt
-
-        return mat
+            matrix[index] = [
+                svd_scores[index],
+                float(candidate.svd_rank or 0),
+                pop_score,
+                float(candidate.popularity_rank or 0),
+                genre_score,
+                float(candidate.genre_rank or 0),
+                float(candidate.rrf_score or 0.0),
+                float(source_count),
+                user_positive_count,
+                user_interaction_count,
+                user_avg_rating,
+                genre_entropy,
+                item_positive_count,
+                item_rating_count,
+                item_avg_rating,
+                float(self.pop_percentiles.get(item_id, 0.0)),
+                float(self.item_genre_counts.get(item_id, max(1, len(item_genres)))),
+                affinity,
+                float(overlap),
+            ]
+        return matrix
 
     def build_features(
         self,
         candidates: Sequence[Candidate],
         user_id: int | None = None,
+        as_of_timestamp: int | None = None,
     ) -> list[CandidateFeatures]:
-        """Tính toán và chuẩn hóa vector đặc trưng cho toàn bộ ứng viên trong pool."""
+        """Sinh object feature để ranker, explanation và debug cùng dùng."""
+        matrix = self.build_feature_matrix(
+            candidates,
+            user_id=user_id,
+            as_of_timestamp=as_of_timestamp,
+        )
+        features: list[CandidateFeatures] = []
         n = len(candidates)
-        if n == 0:
-            return []
-
-        mat = self.build_feature_matrix(candidates, user_id=user_id)
-
-        features_list: list[CandidateFeatures] = []
-        for i, cand in enumerate(candidates):
-            features_list.append(
+        normalized_svd_scores = self._normalise_source_scores(candidates, "svd")
+        for index, candidate in enumerate(candidates):
+            row = matrix[index]
+            source_scores = candidate.source_scores
+            features.append(
                 CandidateFeatures(
-                    item_id=cand.item_id,
-                    latent_score=float(mat[i, 1]),
-                    popularity_score=float(mat[i, 3]),
-                    genre_affinity=min(max(float(mat[i, 4]), 0.0), 1.0),
-                    raw_latent_score=float(mat[i, 0]),
-                    retrieval_rank=i,
-                    retrieval_rank_percentile=float(mat[i, 2]),
-                    user_positive_count=int(mat[i, 5]),
-                    user_avg_rating=float(mat[i, 6]),
-                    item_rating_count=int(mat[i, 7]),
-                    item_avg_rating=float(mat[i, 8]),
-                    item_genre_count=int(mat[i, 9]),
-                    item_popularity_percentile=float(mat[i, 10]),
-                    retrieved_by_svd=float(mat[i, 11]),
-                    retrieved_by_popularity=float(mat[i, 12]),
-                    retrieved_by_genre=float(mat[i, 13]),
-                    source_count=float(mat[i, 14]),
+                    item_id=int(candidate.item_id),
+                    latent_score=float(normalized_svd_scores[index]),
+                    popularity_score=float(row[2]),
+                    genre_affinity=float(row[17]),
+                    raw_latent_score=float(
+                        candidate.svd_score
+                        if candidate.svd_score is not None
+                        else candidate.retrieval_score
+                    ),
+                    retrieval_rank=int(candidate.retrieval_rank),
+                    retrieval_rank_percentile=float(1.0 - index / max(1, n)),
+                    user_positive_count=int(row[8]),
+                    user_avg_rating=float(row[10]),
+                    item_rating_count=int(row[13]),
+                    item_avg_rating=float(row[14]),
+                    item_genre_count=int(row[16]),
+                    item_popularity_percentile=float(row[15]),
+                    retrieved_by_svd=float("svd" in source_scores),
+                    retrieved_by_popularity=float("popularity" in source_scores),
+                    retrieved_by_genre=float("genre" in source_scores),
+                    source_count=float(row[7]),
+                    svd_score=float(row[0]),
+                    svd_rank=int(row[1]),
+                    popularity_retrieval_score=float(row[2]),
+                    popularity_rank=int(row[3]),
+                    genre_retrieval_score=float(row[4]),
+                    genre_rank=int(row[5]),
+                    rrf_score=float(row[6]),
+                    user_interaction_count=int(row[9]),
+                    genre_entropy=float(row[11]),
+                    item_positive_count=int(row[12]),
+                    genre_overlap_count=int(row[18]),
                 )
             )
+        return features
 
-        return features_list
+
+def _genre_entropy(profile: dict[str, float]) -> float:
+    """Tính entropy của hồ sơ genre; profile rỗng có entropy bằng 0."""
+    if not profile:
+        return 0.0
+    values = np.asarray(list(profile.values()), dtype=np.float32)
+    values = values[values > 0]
+    return float(-(values * np.log(values)).sum()) if values.size else 0.0

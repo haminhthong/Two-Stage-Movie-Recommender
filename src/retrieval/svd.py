@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from typing import Iterable
+
 from .base import Candidate, CandidateRetriever
 
 
@@ -45,13 +47,15 @@ class SVDRetriever(CandidateRetriever):
         user_id: int,
         k: int = 200,
         filter_seen: bool = True,
+        seen_items_override: Iterable[int] | None = None,
     ) -> list[Candidate]:
         """Trích xuất top-k ứng viên có điểm tích vô hướng cao nhất.
 
         Args:
             user_id (int): ID người dùng.
             k (int): Số lượng ứng viên cần trích xuất (Mặc định: 200).
-            filter_seen (bool): Loại trừ các item trong tập train của user (Mặc định: True).
+            filter_seen (bool): Loại trừ các item đã xem (Mặc định: True).
+            seen_items_override: Tập item đã xem riêng cho request hiện tại.
 
         Returns:
             list[Candidate]: Danh sách Candidate sắp xếp giảm dần theo retrieval_score.
@@ -67,7 +71,11 @@ class SVDRetriever(CandidateRetriever):
 
         # Lọc bỏ sản phẩm đã xem (Seen Filter guardrail)
         if filter_seen:
-            seen_items = self.seen_by_user.get(user_id)
+            seen_items = (
+                set(seen_items_override)
+                if seen_items_override is not None
+                else self.seen_by_user.get(user_id, set())
+            )
             if seen_items:
                 seen_indices = np.isin(self.items, list(seen_items))
                 latent_scores[seen_indices] = -np.inf
@@ -92,6 +100,8 @@ class SVDRetriever(CandidateRetriever):
                 retrieval_source="svd",
                 retrieval_rank=rank,
                 source_scores={"svd": float(latent_scores[idx])},
+                svd_score=float(latent_scores[idx]),
+                svd_rank=rank + 1,
             )
             for rank, idx in enumerate(partition_indices)
         ]

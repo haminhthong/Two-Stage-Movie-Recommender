@@ -21,6 +21,7 @@ from __future__ import annotations
 import time
 from typing import Any, Sequence
 import numpy as np
+import pandas as pd
 
 from .latency import summarize_latencies
 from .metrics import (
@@ -34,6 +35,7 @@ from .metrics import (
 )
 from .ranking_metrics import ranker_ndcg_at_k, ranker_recall_at_k
 from .retrieval_metrics import candidate_recall_at_k, target_in_catalog_rate
+from ..data.split import seen_items_before
 
 
 class FullFunnelEvaluator:
@@ -73,6 +75,8 @@ class FullFunnelEvaluator:
         max_users: int | None = None,
         k: int = 10,
         seed: int = 42,
+        test_events: pd.DataFrame | None = None,
+        history_df: pd.DataFrame | None = None,
     ) -> dict[str, Any]:
         """Thực hiện đánh giá trên toàn bộ người dùng tập Test trong một lượt duy nhất (Single-Pass)."""
         eligible_users = [
@@ -114,6 +118,15 @@ class FullFunnelEvaluator:
         pop_mrrs: list[float] = []
         pop_novelties: list[float] = []
 
+        # Conditional metrics chỉ tính trên những query Stage 1 đã retrieve target.
+        conditional_rank_ndcgs: list[float] = []
+        conditional_rank_mrrs: list[float] = []
+        conditional_final_ndcgs: list[float] = []
+        conditional_final_mrrs: list[float] = []
+        retrieval_source_hits = {"svd": 0, "popularity": 0, "genre": 0}
+        retrieval_source_rescues = {"popularity": 0, "genre": 0}
+        target_retrieved = 0
+
         # Latencies
         t_ret_list: list[float] = []
         t_rank_list: list[float] = []
@@ -128,19 +141,51 @@ class FullFunnelEvaluator:
 
             # Stage 1: Candidate Retrieval
             t0 = time.perf_counter()
-            candidates = self.engine.retriever.retrieve(u_id, k=cand_k, filter_seen=True)
+            test_timestamp = _target_timestamp(test_events, u_id, true_item)
+            if history_df is not None and test_timestamp is not None:
+                seen_override = seen_items_before(history_df, u_id, test_timestamp)
+            else:
+                seen_override = self.engine.seen_by_user.get(u_id, set())
+            candidates = self.engine.retriever.retrieve(
+                u_id,
+                k=cand_k,
+                filter_seen=True,
+                seen_items_override=seen_override,
+            )
             t_ret = (time.perf_counter() - t0) * 1000.0
             t_ret_list.append(t_ret)
 
             cand_ids = [c.item_id for c in candidates]
+            matching_candidate = next(
+                (candidate for candidate in candidates if candidate.item_id == true_item),
+                None,
+            )
+            if matching_candidate is not None:
+                target_retrieved += 1
+                found_sources = set(matching_candidate.source_scores)
+                for source_name in retrieval_source_hits:
+                    if source_name in found_sources:
+                        retrieval_source_hits[source_name] += 1
+                if "svd" not in found_sources:
+                    for source_name in retrieval_source_rescues:
+                        if source_name in found_sources:
+                            retrieval_source_rescues[source_name] += 1
             cand_recall_50.append(candidate_recall_at_k(cand_ids, true_item, k=50))
             cand_recall_100.append(candidate_recall_at_k(cand_ids, true_item, k=100))
             cand_recall_200.append(candidate_recall_at_k(cand_ids, true_item, k=200))
 
             # Stage 2: Feature Building & Ranking
             t1 = time.perf_counter()
-            feat_mat = self.engine.feature_builder.build_feature_matrix(candidates, user_id=u_id)
-            features = self.engine.feature_builder.build_features(candidates, user_id=u_id)
+            feat_mat = self.engine.feature_builder.build_feature_matrix(
+                candidates,
+                user_id=u_id,
+                as_of_timestamp=test_timestamp,
+            )
+            features = self.engine.feature_builder.build_features(
+                candidates,
+                user_id=u_id,
+                as_of_timestamp=test_timestamp,
+            )
             ranked_cands = self.engine.ranker.rank(features, feature_matrix=feat_mat)
             t_rank = (time.perf_counter() - t1) * 1000.0
             t_rank_list.append(t_rank)
@@ -148,6 +193,9 @@ class FullFunnelEvaluator:
             ranked_ids = [r.item_id for r in ranked_cands]
             rank_recall_10.append(ranker_recall_at_k(ranked_ids, true_item, k=k))
             rank_ndcg_10.append(ranker_ndcg_at_k(ranked_ids, true_item, k=k))
+            if matching_candidate is not None:
+                conditional_rank_ndcgs.append(ranker_ndcg_at_k(ranked_ids, true_item, k=k))
+                conditional_rank_mrrs.append(_mrr_from_ids(ranked_ids, true_item, k))
 
             # Stage 3: MMR Diversity Reranking với rerank_pool_k đồng nhất
             t2 = time.perf_counter()
@@ -169,11 +217,14 @@ class FullFunnelEvaluator:
             final_recalls.append(hit)
             final_ndcgs.append(dcg(items.index(true_item)) if hit else 0.0)
             final_mrrs.append(mrr_at_k(items, true_item))
+            if matching_candidate is not None:
+                conditional_final_ndcgs.append(ranker_ndcg_at_k(items, true_item, k=k))
+                conditional_final_mrrs.append(_mrr_from_ids(items, true_item, k))
             final_ilds.append(intra_list_diversity(items, self.genre_map))
             final_novelties.append(novelty_at_k(items, self.catalog_prob))
 
             # Baseline Popularity
-            seen = self.engine.seen_by_user.get(u_id, set())
+            seen = seen_override
             pop_preds = [it for it in self.popular_items if it not in seen][:k]
             pop_hit = hit_rate_at_k(pop_preds, true_item)
             pop_recalls.append(pop_hit)
@@ -184,12 +235,12 @@ class FullFunnelEvaluator:
         exposure = compute_long_tail_distribution(all_final_recs, self.head_set, self.mid_set, self.tail_set)
         user_cov = compute_user_coverage(all_final_recs, k=k)
 
-        final_rec = float(np.mean(final_recalls)) if final_recalls else 0.0
-        final_ndcg = float(np.mean(final_ndcgs)) if final_ndcgs else 0.0
-        final_mrr = float(np.mean(final_mrrs)) if final_mrrs else 0.0
-        pop_rec = float(np.mean(pop_recalls)) if pop_recalls else 0.0
-        pop_ndcg = float(np.mean(pop_ndcgs)) if pop_ndcgs else 0.0
-        pop_mrr = float(np.mean(pop_mrrs)) if pop_mrrs else 0.0
+        final_rec = _mean(final_recalls)
+        final_ndcg = _mean(final_ndcgs)
+        final_mrr = _mean(final_mrrs)
+        pop_rec = _mean(pop_recalls)
+        pop_ndcg = _mean(pop_ndcgs)
+        pop_mrr = _mean(pop_mrrs)
 
         abs_gain_recall = final_rec - pop_rec
         rel_lift_recall = (abs_gain_recall / pop_rec * 100.0) if pop_rec > 0 else 0.0
@@ -203,13 +254,24 @@ class FullFunnelEvaluator:
             "cold_item_test_share": 1.0 - in_catalog_rate,
             "funnel_stage_metrics": {
                 "stage_1_retrieval": {
-                    "candidate_recall@50": float(np.mean(cand_recall_50)),
-                    "candidate_recall@100": float(np.mean(cand_recall_100)),
-                    "candidate_recall@200": float(np.mean(cand_recall_200)),
+                    "candidate_recall@50": _mean(cand_recall_50),
+                    "candidate_recall@100": _mean(cand_recall_100),
+                    "candidate_recall@200": _mean(cand_recall_200),
+                    "target_retrieved_users": target_retrieved,
+                    "source_contribution": {
+                        source: count / max(1, target_retrieved)
+                        for source, count in retrieval_source_hits.items()
+                    },
+                    "source_rescue_contribution": {
+                        source: count / max(1, target_retrieved)
+                        for source, count in retrieval_source_rescues.items()
+                    },
                 },
                 "stage_2_ranking": {
-                    "ranker_recall@10": float(np.mean(rank_recall_10)),
-                    "ranker_ndcg@10": float(np.mean(rank_ndcg_10)),
+                    "ranker_recall@10": _mean(rank_recall_10),
+                    "ranker_ndcg@10": _mean(rank_ndcg_10),
+                    "conditional_ndcg@10": _mean(conditional_rank_ndcgs),
+                    "conditional_mrr@10": _mean(conditional_rank_mrrs),
                 },
                 "stage_3_final_post_mmr": {
                     f"recall@{k}": final_rec,
@@ -217,8 +279,10 @@ class FullFunnelEvaluator:
                     f"mrr@{k}": final_mrr,
                     "catalog_coverage": float(len(recommended_unique) / max(1, self.total_catalog_size)),
                     "user_coverage": user_cov,
-                    "intra_list_diversity": float(np.mean(final_ilds)),
-                    f"novelty@{k}": float(np.mean(final_novelties)),
+                    "intra_list_diversity": _mean(final_ilds),
+                    f"novelty@{k}": _mean(final_novelties),
+                    "conditional_ndcg@10": _mean(conditional_final_ndcgs),
+                    "conditional_mrr@10": _mean(conditional_final_mrrs),
                     "long_tail_exposure": exposure,
                 },
             },
@@ -226,7 +290,7 @@ class FullFunnelEvaluator:
                 f"recall@{k}": pop_rec,
                 f"ndcg@{k}": pop_ndcg,
                 f"mrr@{k}": pop_mrr,
-                f"novelty@{k}": float(np.mean(pop_novelties)),
+                    f"novelty@{k}": _mean(pop_novelties),
             },
             "model_lift_over_popularity": {
                 "absolute_gain": {
@@ -250,3 +314,29 @@ class FullFunnelEvaluator:
                 "total": summarize_latencies(t_tot_list).__dict__,
             },
         }
+
+
+def _mean(values: Sequence[float]) -> float:
+    """Mean an toàn, không sinh warning khi không có query hợp lệ."""
+    return float(np.mean(values)) if values else 0.0
+
+
+def _target_timestamp(
+    events: pd.DataFrame | None,
+    user_id: int,
+    item_id: int,
+) -> int | None:
+    """Tìm timestamp target để dựng seen state đúng thời điểm."""
+    if events is None or events.empty:
+        return None
+    matches = events[
+        (events["user_id"] == user_id) & (events["item_id"] == item_id)
+    ]
+    if matches.empty or "timestamp" not in matches:
+        return None
+    return int(matches.iloc[0]["timestamp"])
+
+
+def _mrr_from_ids(items: Sequence[int], target_item: int, k: int) -> float:
+    """MRR cho danh sách candidate đã cắt về top-k."""
+    return mrr_at_k(list(items)[:k], target_item)

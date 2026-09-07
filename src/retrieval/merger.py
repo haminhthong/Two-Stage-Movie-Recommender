@@ -1,78 +1,141 @@
-"""Bộ hợp nhất và khử trùng lặp ứng viên đa nguồn (Multi-Source Candidate Merger)."""
+"""Hợp nhất candidate đa nguồn bằng Reciprocal Rank Fusion (RRF)."""
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Iterable
+
 from .base import Candidate, CandidateRetriever
 
 
 class MultiSourceRetriever(CandidateRetriever):
-    """Trích xuất và kết hợp ứng viên từ nhiều nguồn (SVD, Popularity, Genre)."""
+    """Union các nguồn retrieval rồi cắt về một pool theo RRF.
+
+    Điểm SVD, popularity và genre có semantics/scale khác nhau nên tuyệt đối
+    không được sort trực tiếp cùng nhau. RRF chỉ dùng thứ hạng của từng nguồn;
+    score gốc được giữ riêng để Stage 2 học.
+    """
 
     def __init__(
         self,
         retrievers: dict[str, tuple[CandidateRetriever, int]],
+        rrf_k: int = 60,
     ) -> None:
-        """Khởi tạo MultiSourceRetriever.
-
-        Args:
-            retrievers: Dictionary ánh xạ source_name -> (retriever_instance, k_for_source).
-                       Ví dụ: {"svd": (svd_retriever, 150), "popularity": (pop_retriever, 50), "genre": (genre_retriever, 50)}
-        """
         self.retrievers = retrievers
+        self.rrf_k = max(1, int(rrf_k))
+
+    @staticmethod
+    def _retrieve_source(
+        retriever: CandidateRetriever,
+        user_id: int,
+        source_k: int,
+        filter_seen: bool,
+        seen_items_override: Iterable[int] | None,
+    ) -> list[Candidate]:
+        """Gọi retriever mà không mutate state; giữ tương thích mock retriever cũ."""
+        if seen_items_override is None:
+            return retriever.retrieve(
+                user_id=user_id,
+                k=source_k,
+                filter_seen=filter_seen,
+            )
+
+        return retriever.retrieve(
+            user_id=user_id,
+            k=source_k,
+            filter_seen=filter_seen,
+            seen_items_override=seen_items_override,
+        )
 
     def retrieve(
         self,
         user_id: int,
         k: int = 200,
         filter_seen: bool = True,
+        seen_items_override: Iterable[int] | None = None,
     ) -> list[Candidate]:
-        """Trích xuất từ từng nguồn, hợp nhất điểm số và khử trùng lặp."""
-        combined_candidates: dict[int, dict] = {}
-
-        # 1. Thu thập từ từng nguồn theo thứ tự ưu tiên
-        for source_name, (retriever, source_k) in self.retrievers.items():
-            source_cands = retriever.retrieve(user_id=user_id, k=source_k, filter_seen=filter_seen)
-            for c in source_cands:
-                item_id = c.item_id
-                if item_id not in combined_candidates:
-                    combined_candidates[item_id] = {
-                        "primary_score": c.retrieval_score,
-                        "primary_source": source_name,
-                        "min_rank": c.retrieval_rank,
-                        "source_scores": {source_name: c.retrieval_score},
-                    }
-                else:
-                    # Cập nhật thêm điểm số của nguồn mới
-                    combined_candidates[item_id]["source_scores"][source_name] = c.retrieval_score
-                    if len(combined_candidates[item_id]["source_scores"]) > 1:
-                        combined_candidates[item_id]["primary_source"] = "multi_source"
-
-        if not combined_candidates:
+        """Lấy union ứng viên và xếp hạng theo RRF giảm dần."""
+        if k <= 0:
             return []
 
-        # 2. Xếp hạng sơ bộ theo ưu tiên nguồn và điểm số (SVD trước, rồi tới Genre, Popularity)
-        def sort_key(item_tuple: tuple[int, dict]) -> tuple:
-            _item_id, info = item_tuple
-            src_scores = info["source_scores"]
-            svd_sc = src_scores.get("svd", -float("inf"))
-            genre_sc = src_scores.get("genre", -float("inf"))
-            pop_sc = src_scores.get("popularity", -float("inf"))
-            num_sources = len(src_scores)
-            return (num_sources, svd_sc, genre_sc, pop_sc)
+        merged: dict[int, dict[str, object]] = {}
+        for source_name, (retriever, source_k) in self.retrievers.items():
+            candidates = self._retrieve_source(
+                retriever,
+                user_id=user_id,
+                source_k=max(0, int(source_k)),
+                filter_seen=filter_seen,
+                seen_items_override=seen_items_override,
+            )
+            for zero_based_rank, candidate in enumerate(candidates):
+                item_id = int(candidate.item_id)
+                info = merged.setdefault(
+                    item_id,
+                    {"scores": {}, "ranks": {}, "rrf_score": 0.0},
+                )
+                scores = info["scores"]
+                ranks = info["ranks"]
+                assert isinstance(scores, dict)
+                assert isinstance(ranks, dict)
 
-        sorted_items = sorted(combined_candidates.items(), key=sort_key, reverse=True)[:k]
+                source_score = candidate.source_scores.get(
+                    source_name,
+                    float(candidate.retrieval_score),
+                )
+                source_rank = _source_rank(candidate, source_name, zero_based_rank)
+                scores[source_name] = float(source_score)
+                ranks[source_name] = source_rank
+                info["rrf_score"] = float(info["rrf_score"]) + 1.0 / (
+                    self.rrf_k + source_rank
+                )
 
-        merged_list: list[Candidate] = []
-        for rank, (item_id, info) in enumerate(sorted_items):
-            merged_list.append(
+        ordered = sorted(
+            merged.items(),
+            key=lambda pair: (-float(pair[1]["rrf_score"]), pair[0]),
+        )[:k]
+
+        result: list[Candidate] = []
+        for zero_based_rank, (item_id, info) in enumerate(ordered):
+            scores = info["scores"]
+            ranks = info["ranks"]
+            assert isinstance(scores, dict)
+            assert isinstance(ranks, dict)
+            typed_scores = {str(key): float(value) for key, value in scores.items()}
+
+            result.append(
                 Candidate(
                     item_id=item_id,
-                    retrieval_score=float(info["primary_score"]),
-                    retrieval_source=str(info["primary_source"]),
-                    retrieval_rank=rank,
-                    source_scores=info["source_scores"],
+                    retrieval_score=float(info["rrf_score"]),
+                    retrieval_source=(
+                        next(iter(typed_scores))
+                        if len(typed_scores) == 1
+                        else "multi_source"
+                    ),
+                    retrieval_rank=zero_based_rank,
+                    source_scores=typed_scores,
+                    svd_score=typed_scores.get("svd"),
+                    svd_rank=_optional_int(ranks.get("svd")),
+                    popularity_score=typed_scores.get("popularity"),
+                    popularity_rank=_optional_int(ranks.get("popularity")),
+                    genre_score=typed_scores.get("genre"),
+                    genre_rank=_optional_int(ranks.get("genre")),
+                    rrf_score=float(info["rrf_score"]),
+                    source_count=len(typed_scores),
                 )
             )
 
-        return merged_list
+        return result
+
+
+def _optional_int(value: object) -> int | None:
+    """Chuyển rank tùy chọn về int để object Candidate dễ serialize."""
+    return int(value) if value is not None else None
+
+
+def _source_rank(candidate: Candidate, source_name: str, zero_based_rank: int) -> int:
+    """Lấy rank 1-based, có fallback an toàn cho implementation cũ."""
+    rank = {
+        "svd": candidate.svd_rank,
+        "popularity": candidate.popularity_rank,
+        "genre": candidate.genre_rank,
+    }.get(source_name)
+    return int(rank) if rank is not None and rank > 0 else zero_based_rank + 1

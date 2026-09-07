@@ -69,6 +69,8 @@ class Recommender:
         diversity_lambda: float | None = None,
         latent_weight: float | None = None,
         recent_item_ids: list[int] | None = None,
+        debug: bool = False,
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         """Tạo gợi ý chi tiết kèm phân tích điểm và đo lường độ trễ."""
         if hasattr(self, "_engine"):
@@ -78,6 +80,8 @@ class Recommender:
                 diversity_lambda=diversity_lambda,
                 latent_weight=latent_weight,
                 recent_item_ids=recent_item_ids,
+                debug=debug,
+                request_id=request_id,
             )
         return {"user_id": user_id, "strategy": "mock", "items": []}
 

@@ -1,17 +1,25 @@
-# 🎬 Production-Style Two-Stage Recommendation Platform (MovieLens 1M)
+# 🎬 Personalized Two-Stage Movie Recommendation Platform (MovieLens 1M)
 
-> **Hệ thống gợi ý phim cá nhân hóa 2 tầng chuẩn công nghiệp (Production-Style Two-Stage Recommender Platform)**: Tầng 1 (Multi-Source Candidate Retrieval: SVD + Popularity + Genre) trích xuất ứng viên tiềm năng; Tầng 2 (Learned Ranker: XGBoost / LogisticRegression) xếp hạng có giám sát trên 15 đặc trưng phân cấp; Tầng 3 (Post-Ranking Diversity: Bitmask-optimized MMR & Business Rules) tối ưu hóa cân bằng giữa độ liên quan, độ đa dạng và giảm thiểu thiên lệch phổ biến (long-tail debiasing).
+> **Hệ thống gợi ý phim cá nhân hóa theo luồng:** historical events → point-in-time user state → SVD + Popularity + Genre retrieval → RRF top-200 → XGBRanker theo query group → relevance pool 40 → diversity guardrail → top-10. Khi ranker không vượt quality gate trên Dev, hệ thống fallback về retrieval order.
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-4.0.0-green.svg)](https://fastapi.tiangolo.com/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.116-green.svg)](https://fastapi.tiangolo.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests: Pytest](https://img.shields.io/badge/pytest-38%20passed-success.svg)](tests/)
+[![Tests: Pytest](https://img.shields.io/badge/pytest-automated-blue.svg)](tests/)
 
 ---
 
+## Contract hiện tại
+
+- Candidate contract duy nhất: `total_k=200`, gồm SVD 150, popularity 50, genre 50; hợp nhất bằng RRF với `rrf_k=60`.
+- Nhãn `y=1`: positive interaction (`rating >= 4`). Nhãn `y=0`: candidate không trùng target, chỉ là sampled non-interaction proxy vì MovieLens không có impression logs.
+- Ranker mới dùng `XGBRanker(objective="rank:ndcg")` và `groups`; target bị Stage 1 miss sẽ bị loại khỏi rank-training group, không được chèn nhân tạo.
+- Score feature của từng source được giữ riêng; feature snapshot và seen filter tuân thủ `timestamp < as_of`.
+- Ablation/tuning chỉ chạy trên Dev. Locked Test chỉ chạy một lần với pipeline đã freeze; báo cáo cũ trong `reports/` chỉ có giá trị chẩn đoán lịch sử.
+
 ## 📌 1. Bài Toán & Lý Do Cần Kiến Trúc Hai Tầng (Why Two-Stage?)
 
-Trong các nền tảng giải trí và thương mại điện tử quy mô lớn (YouTube, Netflix, Spotify), kho sản phẩm chứa từ hàng trăm nghìn đến hàng chục triệu items. Việc áp dụng các mô hình học máy phức tạp (heavy cross-features, GBDT rankers, Transformer scoring) trên toàn bộ danh mục trong mỗi request của người dùng là **bất khả thi về mặt độ trễ (SLA < 50-100ms)**.
+Trong các nền tảng lớn, retrieval trước giúp ranker chỉ xử lý candidate pool nhỏ. Project đặt **target latency budget <100ms**, nhưng không tuyên bố đạt SLA khi chưa benchmark lại; p95 hiện tại phải được đọc từ report của từng release.
 
 Kiến trúc **Two-Stage Recommender** (dựa trên thiết kế kinh điển của Covington et al., Google/YouTube RecSys 2016) giải quyết triệt để sự đánh đổi giữa **độ chính xác (accuracy)**, **tính đa dạng (diversity)** và **tốc độ suy luận (latency)**:
 - **Tầng 1 — Retrieval**: Chịu trách nhiệm *"Item đúng có lọt vào Top-200 ứng viên không?"*
@@ -59,7 +67,7 @@ Kiến trúc **Two-Stage Recommender** (dựa trên thiết kế kinh điển c�
 └──────────────┬─────────────────────────────┘
                ▼
 ┌────────────────────────────────────────────┐
-│ 4. STAGE 2 — LEARNED RANKING (XGBoost/LR) │
+│ 4. STAGE 2 — GROUP-AWARE XGBRANKER        │
 │ • User Features (counts, avg_rating, etc.) │
 │ • Item Features (pop, counts, genres)      │
 │ • User x Item (latent, genre affinity,     │
@@ -143,9 +151,9 @@ class Candidate:
 
 ## ⚖️ 5. Tầng 2: Supervised Learned Ranker (Learning-to-Rank)
 
-Thay thế phép tổng hợp tuyến tính cố định ($\alpha \cdot S_{latent} + (1-\alpha) \cdot S_{pop}$) bằng mô hình học máy có giám sát (`LearnedRanker` hỗ trợ **XGBoost** và **LogisticRegression**), đồng thời duy trì `WeightedFusionRanker` làm baseline đối chiếu.
+Thay thế phép tổng hợp tuyến tính cố định bằng `XGBRanker(objective="rank:ndcg")` học theo query/user group. `WeightedFusionRanker` chỉ giữ làm baseline và fallback khi ranker không qua Dev gate.
 
-### 15 Đặc trưng phân cấp (Hierarchical Feature Store):
+### 19 đặc trưng source-specific (Hierarchical Feature Store):
 | Nhóm Đặc Trưng | Tên Đặc Trưng | Ý Nghĩa Kỹ Thuật |
 |---|---|---|
 | **User Features** | `user_interaction_count` | Tổng số lượt tương tác trong lịch sử |
@@ -186,15 +194,15 @@ intersection = (mask_a & mask_b).bit_count()
 union = (mask_a | mask_b).bit_count()
 jaccard = intersection / union
 ```
-👉 Giảm độ trễ MMR từ **15.07 ms** xuống còn **0.09 ms** (tăng tốc hơn **160 lần**)!
+Các con số latency ở report cũ chỉ là benchmark tham khảo; cần đo lại trên từng release và workload thực tế, không suy ra SLA từ benchmark này.
 
 ---
 
 ## 📊 7. Kết Quả Đánh Giá Thực Nghiệm (Offline Benchmark)
 
-Toàn bộ dữ liệu được trích xuất trực tiếp từ [reports/test_metrics.json](reports/test_metrics.json) và [reports/ablation.json](reports/ablation.json) trên **toàn bộ 6,035 người dùng tập Test**:
+Các số liệu trong [reports/test_metrics.json](reports/test_metrics.json) và [reports/ablation.json](reports/ablation.json) là report lịch sử. Ablation cũ từng dùng Test nên không được dùng để chọn model hoặc quảng bá champion; report mới phải ghi rõ Dev/Locked Test protocol:
 
-### 7.1. Phễu Đánh Giá Từng Tầng (Funnel Stage Metrics)
+### 7.1. Phễu Đánh Giá Từng Tầng (Funnel Stage Metrics — report lịch sử)
 | Giai Đoạn (Stage) | Chỉ Số Đo Lường | Giá Trị | Ý Nghĩa Kỹ Thuật |
 |---|---|---:|---|
 | **Catalog Availability** | `target_in_catalog_rate` | **99.98%** | 6,034 / 6,035 target items có mặt trong catalog huấn luyện. |
@@ -202,7 +210,7 @@ Toàn bộ dữ liệu được trích xuất trực tiếp từ [reports/test_m
 | **Stage 1: Retrieval** | `candidate_recall@50` | **25.58%** | 1/4 target items nằm trong top 50 ứng viên đầu tiên. |
 | | `candidate_recall@100` | **37.65%** | Hơn 37% target items nằm trong top 100 ứng viên. |
 | | `candidate_recall@200` | **52.48%** | Hơn một nửa ground-truth items lọt qua phễu Tầng 1. |
-| **Stage 2: Ranking** | `ranker_recall@10` | **0.0557** | Tỷ lệ đưa target item vào Top 10 sau mô hình XGBoost. |
+| **Stage 2: Ranking** | `ranker_recall@10` | **0.0557** | Tỷ lệ đưa target item vào Top 10 sau mô hình XGBRanker (số liệu lịch sử). |
 | | `ranker_ndcg@10` | **0.0239** | Thứ hạng tương đối có trọng số vị trí. |
 | **Stage 3: Final Post-MMR** | `final_recall@10` | **0.0557** | Không làm sụt giảm Recall sau bước lọc đa dạng thể loại. |
 
@@ -221,7 +229,7 @@ Toàn bộ dữ liệu được trích xuất trực tiếp từ [reports/test_m
 ---
 
 ### 7.3. Giải Quyết Thiên Lệch Phổ Biến & Khám Phá Long-Tail (Debiasing Breakthrough)
-Một trong những đột phá lớn nhất của phiên bản v4 khi tích hợp Learned Ranker và Positive Genre Profile:
+Các con số dưới đây là diagnostic của phiên bản cũ; không dùng để chọn champion cho release mới:
 
 ```text
 Phiên bản cũ (Heuristic Fusion):
@@ -239,15 +247,15 @@ Phiên bản mới (Learned Two-Stage Platform):
 
 ---
 
-### 7.4. Nghiên Cứu Ablation & Khảo Sát MMR Candidate-Pool Size
-Khảo sát chi tiết trên tập kiểm thử nhằm làm rõ quan hệ đánh đổi giữa Recall, ILD và Độ trễ:
+### 7.4. Nghiên Cứu Ablation & Khảo Sát MMR Candidate-Pool Size (report lịch sử)
+Bảng dưới đây là benchmark cũ để tham khảo quan hệ đánh đổi giữa Recall, ILD và độ trễ; ablation hiện tại phải chạy trên Dev:
 
 | Cấu hình Thử Nghiệm | Recall@10 | Intra-List Diversity (ILD) | Độ Trễ p50 | Độ Trễ p95 |
 |---|---:|---:|---:|---:|
 | **Popularity Baseline** | 0.0390 | 0.7832 | 1.24 ms | 5.36 ms |
 | **SVD Only (Latent Retrieval)** | 0.0850 | 0.7573 | 16.66 ms | 25.79 ms |
 | **SVD + Popularity (Weighted Baseline)** | 0.0840 | 0.7600 | 15.94 ms | 29.36 ms |
-| **Stage-2 Learned Ranker (XGBoost)** | 0.0500 | 0.7320 | 61.79 ms | 279.11 ms |
+| **Stage-2 Learned Ranker (XGBRanker)** | 0.0500 | 0.7320 | 61.79 ms | 279.11 ms |
 | **Full Pipeline (Learned + MMR Pool 40)** | **0.0430** | **0.8740** | **48.27 ms** | **170.17 ms** |
 | • *Ablation: MMR Pool 20* | 0.0410 | 0.8280 | 42.56 ms | 151.81 ms |
 | • *Ablation: MMR Pool 40 (Optimal)* | **0.0430** | **0.8740** | **48.27 ms** | **170.17 ms** |
@@ -255,8 +263,8 @@ Khảo sát chi tiết trên tập kiểm thử nhằm làm rõ quan hệ đánh
 | • *Ablation: MMR Pool 200* | 0.0390 | 0.9478 | 120.18 ms | 297.79 ms |
 
 #### 💡 Phát hiện cốt lõi từ khảo sát:
-1. **Xác nhận Candidate-Pool Approximation**: `MMR Pool 40` đạt Recall@10 cao nhất trong các biến thể MMR (0.043 so với 0.039 của Pool 200). Khi ép giải thuật MMR chọn từ 200 ứng viên, các phim ở cuối pool có ILD rất cao nhưng mức độ liên quan quá thấp sẽ chen chân vào danh sách Top-10, làm giảm sút chất lượng gợi ý.
-2. **Chi phí độ trễ tăng tuyến tính**: Mở rộng từ Pool 40 lên Pool 200 khiến thời gian p95 tăng từ 170ms lên gần 300-400ms mà không đem lại giá trị nghiệp vụ tương xứng. Do đó, `rerank_pool_k = 40` là điểm cân bằng vàng (sweet spot).
+1. Benchmark cũ từng cho thấy `MMR Pool 40` là một điểm cân bằng hợp lý; kết quả này không thay thế relevance guardrail của release mới.
+2. Chi phí độ trễ phụ thuộc phần cứng, batch size và workload; `rerank_pool_k = 40` là contract hiện tại cần được kiểm chứng lại bằng benchmark của release.
 
 ---
 
@@ -265,11 +273,12 @@ Khảo sát chi tiết trên tập kiểm thử nhằm làm rõ quan hệ đánh
 Hệ thống quản lý artifacts theo chuẩn MLflow/Production Registry:
 ```text
 models/
-├── production.json                # Active model pointer (ví dụ: {"active_version": "v4-learned-ranker"})
-└── v4-learned-ranker/
+├── production.json                # Chỉ trỏ release đã qua promotion gate
+└── candidates/                    # Release Candidate, chưa active
+    └── v5-multisource-ranker/
     ├── config.json                # Hyperparameters, split protocol, feature names
     ├── data_manifest.json         # Raw files checksums (SHA256 ratings.dat, movies.dat)
-    ├── split_manifest.json        # Data split timestamps, user/item interaction counts
+    ├── temporal_split_manifest.json # Data split timestamps, user/item interaction counts
     ├── retrieval/
     │   ├── user_emb.npy           # SVD User Embeddings [6040, 64]
     │   └── item_emb.npy           # SVD Item Embeddings [3703, 64]
@@ -291,14 +300,14 @@ curl -X GET "http://127.0.0.1:8000/health"
 {
   "status": "ok",
   "model_ready": true,
-  "model_version": "v4-learned-ranker"
+  "model_version": "v5-multisource-ranker"
 }
 ```
 
 ### 9.2. Endpoint `/recommend/{user_id}` (Hỗ trợ hành vi phiên gần nhất `recent_items`)
 Khi người dùng vừa tương tác trong phiên hiện tại (chưa kịp retrain embedding), tham số `recent_items` cho phép cập nhật tức thời bộ lọc seen và hồ sơ thể loại:
 ```bash
-curl -X GET "http://127.0.0.1:8000/recommend/1?k=2&recent_items=260&recent_items=1197&include_scores=true"
+curl -X GET "http://127.0.0.1:8000/recommend/1?k=2&recent_items=260,1197&include_scores=true"
 ```
 ```json
 {
@@ -317,10 +326,11 @@ curl -X GET "http://127.0.0.1:8000/recommend/1?k=2&recent_items=260&recent_items
         "diversity_penalty": 0.0,
         "final": 0.7421
       },
-      "explanation": "Rank #1: Recommended by Stage-2 Learned Ranker (XGBoost); diversified across Sci-Fi, Action."
+      "reason_codes": ["COLLABORATIVE_MATCH", "GENRE_MATCH"],
+      "explanation": "Tín hiệu cộng tác và mức phù hợp thể loại; danh sách được kiểm soát độ trùng lặp thể loại."
     }
   ],
-  "model_version": "v4-learned-ranker",
+  "model_version": "v5-multisource-ranker",
   "latencies_ms": {
     "retrieval": 2.98,
     "ranking": 55.78,
@@ -353,13 +363,13 @@ python -m pip install -r requirements.txt
 # 3. Tải và kiểm tra checksum dữ liệu MovieLens 1M
 python scripts/download_data.py
 
-# 4. Huấn luyện toàn bộ pipeline (Retrieval SVD -> Rank Train Dataset -> Fit XGBoost -> Freeze Bundle)
+# 4. Huấn luyện pipeline (multi-source retrieval -> query-group ranker -> Release Candidate, chưa active)
 python -m src.train
 
-# 5. Đánh giá kiểm thử phễu toàn diện (Funnel Metrics, Ablation & Latency Benchmark)
+# 5. Đánh giá: funnel trên Locked Test; ablation/baseline chỉ trên Dev
 python -m src.evaluate
 
-# 6. Chạy toàn bộ 38 ca kiểm thử tự động (100% Passed)
+# 6. Chạy kiểm thử tự động
 python -m pytest tests/ -v
 
 # 7. Khởi chạy microservice API
@@ -376,17 +386,18 @@ Two-Stage-Recommender/
 ├── configs/                       # Cấu hình mở rộng
 ├── data/raw/ml-1m/                # Dữ liệu gốc MovieLens 1M (ratings.dat, movies.dat)
 ├── models/                        # Versioned Artifact Registry
-│   ├── production.json            # Active version pointer ("v4-learned-ranker")
-│   └── v4-learned-ranker/         # Frozen bundle
-│       ├── config.json            # Model hyperparameters & contracts
-│       ├── data_manifest.json     # Input files SHA256 checksums
-│       ├── split_manifest.json    # Temporal split statistics & timestamps
-│       ├── retrieval/             # user_emb.npy, item_emb.npy
-│       ├── ranking/               # ranker.joblib (XGBoost/LR)
-│       └── metadata/              # meta.joblib (titles, genres, bitmasks, seen)
+│   ├── production.json            # Active version pointer sau promotion
+│   └── candidates/                # RC chưa active; chỉ promote sau quality gates
+│       └── v5-multisource-ranker/
+│           ├── config.json        # Model hyperparameters & contracts
+│           ├── data_manifest.json # Input files SHA256 checksums
+│           ├── temporal_split_manifest.json # Temporal split statistics
+│           ├── retrieval/         # user_emb.npy, item_emb.npy
+│           ├── ranking/           # ranker.joblib (XGBRanker)
+│           └── metadata/          # meta.joblib (titles, genres, seen)
 ├── reports/                       # Báo cáo đánh giá chính thức
 │   ├── test_metrics.json          # Funnel Stage Metrics, Lift, Exposure, Latencies
-│   └── ablation.json              # SVD vs Weighted vs Learned vs MMR Pool 20/40/100/200
+│   └── ablation.json              # Baselines trên Dev, không grid trên Test
 ├── scripts/
 │   └── download_data.py           # Tải MovieLens 1M kèm SHA256 validation
 ├── src/
@@ -409,7 +420,7 @@ Two-Stage-Recommender/
 │   │   ├── genre.py               # GenreRetriever (Positive profile based)
 │   │   └── merger.py              # MultiSourceRetriever (dedupe & metadata enrich)
 │   ├── ranking/                   # [Stage 2: Scoring & Learning-to-Rank]
-│   │   ├── features.py            # 15 hierarchical features & vectorization
+│   │   ├── features.py            # 19 source-specific/PIT-safe features
 │   │   ├── dataset.py             # RankDatasetBuilder (negative sampling proxy)
 │   │   ├── model.py               # LearnedRanker (XGBoost/LR) & WeightedFusionRanker
 │   │   ├── trainer.py             # Training loop & validation evaluation
@@ -444,13 +455,13 @@ Two-Stage-Recommender/
 ## 💼 12. Điểm Nhấn Phỏng Vấn Kỹ Thuật (STAR Interview Highlights)
 
 ### 🎯 Điểm dòng CV mẫu (Resume Bullet Points):
-- **Thiết kế & Xây dựng Hệ thống Gợi ý 2 Tầng Chuẩn Công Nghiệp (Two-Stage Recommendation Platform)** trên MovieLens 1M: Stage 1 Multi-Source Candidate Retrieval (SVD + Popularity + Genre), Stage 2 Supervised Learning-to-Rank (XGBoost với 15 đặc trưng phân cấp) và Stage 3 Post-Ranking Diversity Reranker.
+- **Thiết kế hệ thống gợi ý 2 tầng** trên MovieLens 1M: Stage 1 Multi-Source Retrieval (SVD + Popularity + Genre) với RRF, Stage 2 group-aware XGBRanker với 19 feature source-specific và Stage 3 diversity dưới relevance guardrail.
 - **Thiết kế giao thức Per-User Temporal 4-Way Split** (`min_positives = 4`) tách biệt nghiêm ngặt: Retrieval Train $\rightarrow$ Rank Train $\rightarrow$ Validation $\rightarrow$ Test, triệt tiêu hoàn toàn rò rỉ dữ liệu tương lai (**Lookahead Data Leakage**) và loại bỏ Training-Serving Skew.
 - **Sửa lỗi logic phân định tín hiệu (Data Contract)**: Chuẩn hóa User Genre Profile nghiêm ngặt chỉ dựa trên tương tác tích cực ($\ge 4.0$), loại bỏ hiện tượng thiên lệch sở thích tiêu cực.
-- **Xây dựng phễu đo lường hiệu năng từng tầng (Funnel Stage Metrics)**: Đo lường Candidate Recall@200 đạt **52.48%**, Target-in-Catalog Rate đạt **99.98%**, Final Recall@10 đạt **0.0557** (+25.37% relative lift so với baseline).
-- **Tạo bước đột phá về Đa dạng hóa & Giảm thiên lệch Long-Tail**: Mở rộng **Catalog Coverage từ 23.01% lên 48.34%** (gấp 12 lần baseline); giảm nồng độ Head Exposure từ **89.81% xuống 36.01%**, dịch chuyển 63.4% phơi nhiễm sang danh mục phim tầm trung (Mid-tier items).
-- **Tối ưu hóa thuật toán MMR bằng Bitmask vi xử lý**: Thay thế phép giao tập hợp Python chậm chạp bằng toán tử bitwise nguyên thủy và hàm `bit_count()`, giảm thời gian tính toán độ tương đồng thể loại từ **15.07 ms xuống 0.09 ms (tăng tốc 160x)**.
-- **Quản trị vòng đời Model Artifacts chuẩn MLOps**: Lưu trữ versioned bundle (`models/v4-learned-ranker/`), kiểm tra tính toàn vẹn dữ liệu bằng SHA256 manifest và trỏ phiên bản động qua `production.json`.
+- **Xây dựng phễu đo lường hiệu năng từng tầng (Funnel Stage Metrics)**: Tách riêng retrieval recall, ranker quality, final quality, conditional metrics và rescue metrics; mọi số liệu production phải lấy từ report của release cụ thể.
+- **Đo lường đa dạng hóa & thiên lệch danh mục**: Theo dõi Catalog Coverage, ILD, Novelty và Head/Mid/Tail Exposure; không quảng bá các số liệu lịch sử trong `reports/` như kết quả của release mới.
+- **Tối ưu hóa MMR bằng Bitmask**: Dùng toán tử bitwise và `bit_count()`; latency phải được benchmark theo từng release, không suy diễn SLA từ benchmark cũ.
+- **Quản trị vòng đời Model Artifacts**: Train ghi Release Candidate; `manifest.json` kiểm tra hash/schema; chỉ `promote_release()` sau Dev gate và Locked Test mới cập nhật `production.json`. Loader fail-closed, không trộn artifact root/legacy.
 
 ---
 
@@ -463,7 +474,7 @@ Two-Stage-Recommender/
 > - **Collaborative Filtering (SVD)** nắm bắt rất tốt các tương quan tiềm ẩn phức tạp giữa người dùng tương đồng, nhưng dễ bỏ sót các sản phẩm mới hoặc các sở thích thể loại chưa được phân rã rõ.
 > - **Popularity Retriever** cung cấp điểm neo an toàn cho các sản phẩm thịnh hành đang có xác suất tiên nghiệm cao.
 > - **Genre Affinity Retriever** trực tiếp đưa vào các sản phẩm đúng thể loại yêu thích gần đây của người dùng.
-> Việc kết hợp nhiều nguồn trích xuất giúp nâng cao Candidate Recall ở Tầng 1 (đạt 52.48% tại Top 200), cung cấp một tập ứng viên đa dạng cho Stage-2 Learned Ranker phân loại tinh chỉnh.
+> Việc kết hợp nhiều nguồn trích xuất cung cấp một tập ứng viên đa dạng cho Stage-2 Learned Ranker. Candidate Recall phải được đọc từ funnel report của release đang đánh giá; số liệu lịch sử trong tài liệu này không phải quality gate hiện hành.
 </details>
 
 <details>

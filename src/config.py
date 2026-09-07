@@ -19,7 +19,7 @@ class TrainConfig:
 
     # Cấu hình kích thước ứng viên qua từng chặng (Uniform Pipeline Protocol)
     candidate_k: int = 200     # Stage 1: Candidate Pool size
-    ranking_k: int = 50        # Stage 2: Ranked Candidates to consider
+    ranking_k: int = 200       # Deprecated: ranker chấm điểm toàn bộ candidate pool
     rerank_pool_k: int = 40    # Stage 3: MMR Diversity candidate pool size (đồng nhất Train, Val, Test, Serving)
     final_k: int = 10          # Final Recommendations top-K
 
@@ -32,7 +32,7 @@ class TrainConfig:
     popularity_candidate_k: int = 50
     genre_candidate_k: int = 50
 
-    # Lựa chọn mô hình Stage-2 Ranker: "xgboost", "logistic_regression", "weighted_fusion"
+    # XGBRanker là mặc định; LogisticRegression chỉ là fallback khi thiếu XGBoost.
     ranker_model_type: str = "xgboost"
 
     # Siêu tham số tìm kiếm lưới (Grid Search) cho baseline và MMR
@@ -40,24 +40,39 @@ class TrainConfig:
         default_factory=lambda: [0.6, 0.7, 0.8, 0.85, 0.9, 0.95, 1.0]
     )
     diversity_lambda_candidates: list[float] = field(
-        default_factory=lambda: [0.0, 0.02, 0.05, 0.1, 0.2]
+        default_factory=lambda: [0.8, 0.9, 0.95, 0.98, 1.0]
     )
     max_val_users: int = 1000
+    max_rank_train_users: int = 3000
     model_dir: str = "models"
-    model_version: str = "v4-learned-ranker"
+    model_version: str = "v5-multisource-ranker"
+
+    @property
+    def candidate_contract(self) -> dict[str, object]:
+        """Contract duy nhất được dùng ở train, dev, test và serving."""
+        return {
+            "total_k": self.candidate_k,
+            "sources": {
+                "svd": self.svd_candidate_k,
+                "popularity": self.popularity_candidate_k,
+                "genre": self.genre_candidate_k,
+            },
+            "merge": {"method": "rrf", "rrf_k": 60},
+            "seen_filter": "request_time",
+        }
 
 
 @dataclass
 class RankingConfig:
     """Cấu hình cho Tầng 2: Feature scoring, learned ranker và MMR diversity reranking."""
 
-    ranker_type: str = "xgboost"  # "xgboost", "logistic_regression", "weighted_fusion"
+    ranker_type: str = "xgb_ranker"  # "xgb_ranker", "logistic_regression", "weighted_fusion"
     latent_weight: float = 0.9
     genre_affinity_weight: float = 0.15
-    diversity_lambda: float = 0.05
+    diversity_lambda: float = 0.95
     popularity_scale: str = "log1p"  # 'log1p' hoặc 'linear'
     candidate_k: int = 200
-    ranking_k: int = 50
+    ranking_k: int = 200
     rerank_pool_k: int = 40
     final_k: int = 10
 
@@ -67,10 +82,10 @@ class ServingConfig:
     """Cấu hình phục vụ thời gian thực (Online Serving)."""
 
     model_dir: str | Path = "models"
-    model_version: str = "v4-learned-ranker"
+    model_version: str = "v5-multisource-ranker"
     candidate_k: int = 200
     ranking_k: int = 50
     rerank_pool_k: int = 40
     default_top_k: int = 10
     max_top_k: int = 50
-    default_diversity_lambda: float = 0.05
+    default_diversity_lambda: float = 0.95

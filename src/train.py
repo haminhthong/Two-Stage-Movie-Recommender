@@ -4,14 +4,13 @@ Quy trình chuẩn công nghiệp (Production Recommender Pipeline):
 1. Nạp MovieLens 1M và sinh bảng kê nguồn gốc dữ liệu (Data Manifest kèm SHA256).
 2. Phân chia 4 tập độc lập theo thời gian (4-Way Temporal Split: Retrieval -> Rank-Train -> Val -> Test)
    và sinh Split Manifest (Per-User Temporal Holdout).
-3. Huấn luyện Stage-1 Retrieval: Xây dựng ma trận tương tác ngầm định (Implicit-Positive: Rating >= 4.0),
-   phân rã nhân tử ẩn TruncatedSVD, tính Log-transformed Popularity Prior và User Genre Profiles (chỉ từ positive ratings).
+3. Huấn luyện Stage-1 Retrieval: SVD + Popularity + Genre, sau đó hợp nhất bằng RRF.
 4. Tạo Candidate Dataset tại mốc t_rank: Sinh tập huấn luyện (X, y, groups) cho Ranker với positive target
    và sampled negative proxies từ candidate pool.
-5. Huấn luyện Stage-2 Learned Ranker (XGBoost / Logistic Regression) với 15 features phân cấp.
+5. Huấn luyện Stage-2 XGBRanker (rank:ndcg) với query groups và 19 feature.
 6. Validation Tuning: Tối ưu hóa siêu tham số alpha (cho baseline) và diversity_lambda (cho MMR) với
    kích thước rerank_pool_k = 40 đồng nhất, áp dụng pre-ranking caching để tối ưu tốc độ.
-7. Đóng gói và lưu trữ Versioned Artifacts (models/<version>/), cập nhật production.json và đồng bộ backward-compatible.
+7. Đóng gói Release Candidate; chỉ promotion sau khi locked test và release gates đạt.
 8. Báo cáo đánh giá phễu (Stage Funnel Metrics) và kết thúc quy trình.
 """
 
@@ -23,7 +22,6 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy.sparse import csr_matrix
 from sklearn.decomposition import TruncatedSVD
 
 from .artifacts.writer import save_versioned_bundle
@@ -40,12 +38,15 @@ from .data import (
 )
 from .ranking.dataset import RankDatasetBuilder
 from .ranking.features import CandidateFeatureBuilder
-from .ranking.model import LearnedRanker, WeightedFusionRanker
 from .ranking.scorer import RankedCandidate, TwoStageRanker
 from .ranking.trainer import train_learned_ranker
 from .reranking.diversity import DiversityReranker
+from .retrieval.genre import GenreRetriever
+from .retrieval.merger import MultiSourceRetriever
+from .retrieval.popularity import PopularityRetriever
 from .retrieval.svd import SVDRetriever
-from .utils import LOGGER, save_json, set_seed, setup_logging
+from .evaluation.ranking_metrics import ranker_ndcg_at_k, ranker_recall_at_k
+from .utils import LOGGER, set_seed, setup_logging
 
 
 def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
@@ -67,6 +68,7 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
         df_ratings,
         rating_threshold=cfg.rating_threshold,
         min_positive=cfg.min_positive,
+        protocol="per_user",
     )
     split_manifest = create_split_manifest(
         retrieval_train_df=retrieval_train_df,
@@ -135,15 +137,18 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
     user_stats: dict[int, dict[str, float]] = {
         int(u): {
             "positive_count": float(user_pos_counts.get(u, 0)),
+            "interaction_count": float((retrieval_train_df.user_id == u).sum()),
             "avg_rating": float(user_avg_ratings.get(u, 3.8)),
         }
         for u in users
     }
 
     item_rating_counts = retrieval_train_df.groupby("item_id").size().to_dict()
+    item_positive_counts = positive_retrieval.groupby("item_id").size().to_dict()
     item_avg_ratings = retrieval_train_df.groupby("item_id")["rating"].mean().to_dict()
     item_stats: dict[int, dict[str, float]] = {
         int(m): {
+            "positive_count": float(item_positive_counts.get(m, 0)),
             "rating_count": float(item_rating_counts.get(m, 0)),
             "avg_rating": float(item_avg_ratings.get(m, 3.5)),
         }
@@ -157,6 +162,8 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
         user_genre_profiles=user_genre_profiles,
         user_stats=user_stats,
         item_stats=item_stats,
+        interactions_df=retrieval_train_df,
+        rating_threshold=cfg.rating_threshold,
     )
 
     svd_retriever = SVDRetriever(
@@ -168,14 +175,44 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
         seen_by_user=seen_by_user,
     )
 
-    LOGGER.info("Sinh tập dữ liệu giám sát Stage-2 Ranker từ tập Rank-Train (candidate_k=%d)...", cfg.candidate_k)
-    dataset_builder = RankDatasetBuilder(feature_builder=feature_builder, candidate_k=100)
+    popularity_retriever = PopularityRetriever(
+        popular_items=popular_items,
+        popularity_scores=log_popularity,
+        seen_by_user=seen_by_user,
+    )
+    genre_retriever = GenreRetriever(
+        popular_items=popular_items,
+        genre_map=genre_map,
+        user_genre_profiles=user_genre_profiles,
+        popularity_scores=log_popularity,
+        seen_by_user=seen_by_user,
+    )
+    multi_retriever = MultiSourceRetriever(
+        retrievers={
+            "svd": (svd_retriever, cfg.svd_candidate_k),
+            "popularity": (popularity_retriever, cfg.popularity_candidate_k),
+            "genre": (genre_retriever, cfg.genre_candidate_k),
+        },
+        rrf_k=60,
+    )
+
+    LOGGER.info(
+        "Sinh dữ liệu Stage-2 từ candidate pool đa nguồn (candidate_k=%d)...",
+        cfg.candidate_k,
+    )
+    dataset_builder = RankDatasetBuilder(
+        feature_builder=feature_builder,
+        candidate_k=cfg.candidate_k,
+    )
     X_rank, y_rank, groups_rank = dataset_builder.build_dataset(
         rank_train_df=rank_train_df,
-        retriever=svd_retriever,
-        max_users=3000,
+        retriever=multi_retriever,
+        max_users=cfg.max_rank_train_users,
         seed=cfg.seed,
     )
+    LOGGER.info("Coverage target retrieval của rank-train: %.2f%%", 100.0 * float(
+        dataset_builder.last_build_stats.get("target_retrieval_rate", 0.0)
+    ))
 
     # Step 5: Huấn luyện Stage-2 Learned Ranker
     learned_ranker = train_learned_ranker(
@@ -198,34 +235,65 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
         sampled_val_users = eligible_val_users
 
     # Chuẩn bị candidates cho tập Validation
-    user_val_cands: dict[int, tuple[int, list]] = {}
     val_alpha_precomputed: dict[int, tuple[int, np.ndarray, np.ndarray, np.ndarray]] = {}
     val_learned_ranked: dict[int, tuple[int, list[RankedCandidate]]] = {}
+    val_retrieval_ranked: dict[int, list[RankedCandidate]] = {}
+    val_stage1_ndcgs: list[float] = []
+    val_stage1_recalls: list[float] = []
+    val_learned_ndcgs: list[float] = []
+    val_learned_recalls: list[float] = []
 
     ranker_scorer = TwoStageRanker(rank_model=learned_ranker)
 
     for uid in sampled_val_users:
         u_id = int(uid)
         true_item = val_truth[u_id]
-        cands = svd_retriever.retrieve(u_id, k=cfg.candidate_k, filter_seen=True)
+        val_timestamp = int(val_df.loc[val_df["user_id"] == u_id, "timestamp"].iloc[0])
+        val_seen = extract_seen_items(
+            df_ratings[
+                (df_ratings["user_id"] == u_id)
+                & (df_ratings["timestamp"] < val_timestamp)
+            ]
+        ).get(u_id, set())
+        cands = multi_retriever.retrieve(
+            u_id,
+            k=cfg.candidate_k,
+            filter_seen=True,
+            seen_items_override=val_seen,
+        )
         if not cands:
             continue
 
-        user_val_cands[u_id] = (true_item, cands)
-
         # Precompute cho alpha tuning
         cand_indices = np.array([c.item_id for c in cands])
-        raw_sc = np.array([c.retrieval_score for c in cands], dtype=np.float32)
-        min_s, max_s = float(raw_sc.min()), float(raw_sc.max())
-        denom = max_s - min_s
-        norm_sc = (raw_sc - min_s) / (denom + 1e-9) if denom > 1e-9 else np.ones_like(raw_sc)
-        pop_sc = np.array([log_popularity.get(int(m), 0.0) for m in cand_indices], dtype=np.float32)
+        val_features = feature_builder.build_features(
+            cands,
+            user_id=u_id,
+            as_of_timestamp=val_timestamp,
+        )
+        val_matrix = np.vstack([feature.to_feature_vector() for feature in val_features])
+        norm_sc = val_matrix[:, 0]
+        pop_sc = val_matrix[:, 2]
         val_alpha_precomputed[u_id] = (true_item, cand_indices, norm_sc, pop_sc)
 
         # Precompute ranked candidates bằng learned ranker (chạy 1 lần duy nhất!)
-        feats = feature_builder.build_features(cands, user_id=u_id)
+        feats = val_features
         ranked = ranker_scorer.rank(feats)
         val_learned_ranked[u_id] = (true_item, ranked)
+        val_retrieval_ranked[u_id] = [
+            RankedCandidate(
+                item_id=feature.item_id,
+                relevance_score=1.0 - index / max(1, len(feats)),
+                features=feature,
+            )
+            for index, feature in enumerate(feats)
+        ]
+        cand_ids = [candidate.item_id for candidate in cands]
+        ranked_ids = [candidate.item_id for candidate in ranked]
+        val_stage1_ndcgs.append(ranker_ndcg_at_k(cand_ids, true_item, k=cfg.final_k))
+        val_stage1_recalls.append(ranker_recall_at_k(cand_ids, true_item, k=cfg.final_k))
+        val_learned_ndcgs.append(ranker_ndcg_at_k(ranked_ids, true_item, k=cfg.final_k))
+        val_learned_recalls.append(ranker_recall_at_k(ranked_ids, true_item, k=cfg.final_k))
 
     # Tuning alpha cho Baseline Heuristic Fusion (vectorized, chạy cực nhanh)
     alpha_recalls: dict[str, float] = {}
@@ -240,14 +308,32 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
     best_alpha = max(cfg.alpha_candidates, key=lambda a: alpha_recalls[f"{a:.2f}"])
     LOGGER.info("Kết quả tuning alpha (Baseline Ranker) trên Validation: %s -> Chọn best_alpha = %.2f", alpha_recalls, best_alpha)
 
-    # Tuning diversity_lambda cho Stage 3 MMR Reranking trên các candidates đã pre-ranked
+    # Gate Stage 2: chỉ bật ranker nếu thắng retrieval order trên Dev.
+    stage1_ndcg = float(np.mean(val_stage1_ndcgs)) if val_stage1_ndcgs else 0.0
+    stage1_recall = float(np.mean(val_stage1_recalls)) if val_stage1_recalls else 0.0
+    learned_ndcg = float(np.mean(val_learned_ndcgs)) if val_learned_ndcgs else 0.0
+    learned_recall = float(np.mean(val_learned_recalls)) if val_learned_recalls else 0.0
+    ranker_enabled = learned_ndcg > stage1_ndcg and learned_recall >= stage1_recall
+    LOGGER.info(
+        "Dev Stage-2 gate: order NDCG=%.4f/Recall=%.4f; ranker NDCG=%.4f/Recall=%.4f; enabled=%s",
+        stage1_ndcg,
+        stage1_recall,
+        learned_ndcg,
+        learned_recall,
+        ranker_enabled,
+    )
+
+    # Tuning diversity theo constraint: NDCG không giảm quá 2%, sau đó chọn ILD cao nhất.
     diversity_tuning_results: dict[str, dict[str, float]] = {}
-    best_tradeoff_score = -1.0
-    best_lambda = 0.05
+    best_lambda = 0.0
+    best_ild = -1.0
+    relevance_baseline_ndcg = learned_ndcg if ranker_enabled else stage1_ndcg
+    relevance_floor = relevance_baseline_ndcg * 0.98
 
     for div_lambda in cfg.diversity_lambda_candidates:
-        hits = []
-        ilds = []
+        hits: list[float] = []
+        ndcgs: list[float] = []
+        ilds: list[float] = []
         reranker = DiversityReranker(
             genre_map=genre_map,
             default_lambda=div_lambda,
@@ -255,8 +341,9 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
         )
 
         for u_id, (true_item, ranked) in val_learned_ranked.items():
+            source_ranked = ranked if ranker_enabled else val_retrieval_ranked[u_id]
             final_recs = reranker.rerank(
-                ranked,
+                source_ranked,
                 k=cfg.final_k,
                 diversity_lambda_override=div_lambda,
                 rerank_pool_k=cfg.rerank_pool_k,
@@ -264,6 +351,7 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
             top_ids = [r.item_id for r in final_recs]
             hit = float(true_item in top_ids)
             hits.append(hit)
+            ndcgs.append(ranker_ndcg_at_k(top_ids, true_item, k=cfg.final_k))
 
             if len(top_ids) > 1:
                 dists: list[float] = []
@@ -277,18 +365,21 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
                 ilds.append(float(np.mean(dists)) if dists else 0.0)
 
         mean_recall = float(np.mean(hits)) if hits else 0.0
+        mean_ndcg = float(np.mean(ndcgs)) if ndcgs else 0.0
         mean_ild = float(np.mean(ilds)) if ilds else 0.0
-        tradeoff = mean_recall + 0.01 * mean_ild
+        valid = mean_ndcg >= relevance_floor
 
         key_str = f"lambda_{div_lambda:.2f}"
         diversity_tuning_results[key_str] = {
             "recall@10": round(mean_recall, 4),
+            "ndcg@10": round(mean_ndcg, 4),
             "intra_list_diversity": round(mean_ild, 4),
-            "tradeoff_objective": round(tradeoff, 4),
+            "relevance_floor": round(relevance_floor, 4),
+            "within_relevance_guardrail": valid,
         }
 
-        if tradeoff > best_tradeoff_score:
-            best_tradeoff_score = tradeoff
+        if valid and mean_ild > best_ild:
+            best_ild = mean_ild
             best_lambda = div_lambda
 
     LOGGER.info("Kết quả tuning diversity_lambda: %s -> Chọn best_diversity_lambda = %.2f", diversity_tuning_results, best_lambda)
@@ -311,24 +402,29 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
     }
 
     config_payload = {
-        "schema_version": 4,
+        "schema_version": 5,
         "version": cfg.model_version,
         "seed": cfg.seed,
         "embedding_dimension": cfg.embedding_dim,
         "candidate_k": cfg.candidate_k,
-        "ranking_k": cfg.ranking_k,
+        "max_rank_train_users": cfg.max_rank_train_users,
         "rerank_pool_k": cfg.rerank_pool_k,
         "final_k": cfg.final_k,
         "top_k": cfg.final_k,
+        "candidate_contract": cfg.candidate_contract,
+        "multi_source_retrieval": True,
+        "retrieval_fusion": {"method": "rrf", "rrf_k": 60},
         "latent_weight": float(best_alpha),
         "diversity_lambda": float(best_lambda),
-        "ranker_model_type": cfg.ranker_model_type,
+        "ranker_model_type": learned_ranker.model_type,
+        "ranker_enabled": ranker_enabled,
+        "feature_schema_version": "rank-features-v1",
         "interaction_contract": {
             "feedback": "implicit_positive",
             "rating_threshold": cfg.rating_threshold,
             "explicit_zeros_stored": False,
             "split": "per_user_temporal_holdout",
-            "seen_filter": "all_train_interactions",
+            "seen_filter": "all_interactions_before_request_timestamp",
             "negative_sampling_proxy": "unobserved_candidates_without_impressions",
         },
         "validation_tuning_grid": {
@@ -336,20 +432,35 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
             "diversity_tuning": diversity_tuning_results,
         },
         "positive_interactions": int(interaction_matrix.nnz),
+        "rank_train_target_retrieval": dataset_builder.last_build_stats,
+        "dev_metrics": {
+            "stage1_order_ndcg@10": stage1_ndcg,
+            "stage1_order_recall@10": stage1_recall,
+            "ranker_ndcg@10": learned_ndcg,
+            "ranker_recall@10": learned_recall,
+            "ranker_gate_passed": ranker_enabled,
+        },
     }
 
     saved_version_dir = save_versioned_bundle(
         base_dir=cfg.model_dir,
-        version=cfg.model_version,
+        version=f"candidates/{cfg.model_version}",
         user_embeddings=user_embeddings,
         item_embeddings=item_embeddings,
         metadata=metadata_payload,
         config_payload=config_payload,
-        ranker=learned_ranker,
+        # Chỉ đóng gói ranker khi Dev gate đã bật; artifact bị loại không nên
+        # trở thành một dependency runtime hoặc bị hiểu nhầm là model active.
+        ranker=learned_ranker if ranker_enabled else None,
         data_manifest=data_manifest,
         split_manifest=split_manifest,
+        evaluation_report={"dev_metrics": config_payload["dev_metrics"]},
+        publish=False,
     )
-    LOGGER.info("Đã lưu trữ thành công toàn bộ Versioned Model Bundle tại '%s'!", saved_version_dir)
+    LOGGER.info(
+        "Đã lưu Release Candidate (chưa active) tại '%s'. Locked Test và promotion là bước riêng.",
+        saved_version_dir,
+    )
 
     return config_payload
 

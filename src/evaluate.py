@@ -7,8 +7,8 @@ Cung cấp:
    - Stage 3 (Final Post-MMR): Recall@10, NDCG@10, MRR@10, ILD, Coverage, Novelty
    - Lift: Báo cáo cả `absolute_gain` và `relative_lift`
 2. Nghiên cứu thực nghiệm (Ablation Benchmark):
-   - So sánh Popularity vs SVD vs Heuristic Weighted Fusion vs Stage-2 Learned Ranker vs Full Pipeline
-   - Nghiên cứu xấp xỉ MMR Candidate Pool: Pool 20 vs 40 vs 100 vs 200 (Recall vs ILD vs Latency).
+   - So sánh Popularity vs SVD vs Multi-Source Retrieval vs Stage-2 Learned Ranker và policy diversity.
+   - Kết quả ablation được ghi cho Dev; Locked Test chỉ do evaluator chính thức chạy một lần.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 
-from .data import load_ratings, temporal_split_four_way, time_split
+from .data import load_ratings, seen_items_before, temporal_split_four_way
 from .evaluation.evaluator import FullFunnelEvaluator
 from .evaluation.latency import summarize_latencies
 from .evaluation.metrics import (
@@ -61,7 +61,14 @@ def evaluate_recommender(
         genre_map=recommender.metadata.get("genres", {}),
     )
 
-    summary = evaluator.evaluate(test_truth=test_truth, max_users=max_users, k=k, seed=seed)
+    summary = evaluator.evaluate(
+        test_truth=test_truth,
+        max_users=max_users,
+        k=k,
+        seed=seed,
+        test_events=test_df,
+        history_df=df_ratings,
+    )
 
     final_stage = summary["funnel_stage_metrics"]["stage_3_final_post_mmr"]
     pop_baseline = summary["popularity_baseline"]
@@ -97,20 +104,20 @@ def run_ablation_study(
     output_path: str = "reports/ablation.json",
     seed: int = 42,
 ) -> dict[str, Any]:
-    """Nghiên cứu đóng góp từng thành phần và benchmark kích thước pool MMR."""
+    """Chọn baseline/ranker/diversity trên Development, tuyệt đối không dùng Test."""
     setup_logging()
     LOGGER.info("Bắt đầu chạy Ablation Study & MMR Candidate Pool Benchmark trên %d người dùng...", max_users)
 
     df_ratings = load_ratings()
-    _, _, _, test_df = temporal_split_four_way(df_ratings)
-    test_truth = dict(zip(test_df.user_id, test_df.item_id, strict=True))
+    _, _, val_df, _ = temporal_split_four_way(df_ratings)
+    dev_truth = dict(zip(val_df.user_id, val_df.item_id, strict=True))
 
     recommender = Recommender()
     engine = recommender._engine
     genres_map = recommender.metadata.get("genres", {})
     popular_items = recommender.metadata["popular"]
 
-    eligible_users = [u for u in test_truth if u in engine.user_map]
+    eligible_users = [u for u in dev_truth if u in engine.user_map]
     rng = np.random.default_rng(seed)
     if len(eligible_users) > max_users:
         eligible_users = list(rng.choice(eligible_users, size=max_users, replace=False))
@@ -121,13 +128,27 @@ def run_ablation_study(
     cand_k = engine.config.get("candidate_k", 200)
 
     for u_id in eligible_users:
-        cands = engine.retriever.retrieve(u_id, k=cand_k, filter_seen=True)
-        feats = engine.feature_builder.build_features(cands, user_id=u_id)
+        target_item = dev_truth[u_id]
+        dev_timestamp = int(
+            val_df.loc[val_df["user_id"] == u_id, "timestamp"].iloc[0]
+        )
+        seen = seen_items_before(df_ratings, u_id, dev_timestamp)
+        cands = engine.retriever.retrieve(
+            u_id,
+            k=cand_k,
+            filter_seen=True,
+            seen_items_override=seen,
+        )
+        feats = engine.feature_builder.build_features(
+            cands,
+            user_id=u_id,
+            as_of_timestamp=dev_timestamp,
+        )
         user_data[u_id] = {
             "cands": cands,
             "feats": feats,
-            "seen": engine.seen_by_user.get(u_id, set()),
-            "true_item": test_truth[u_id],
+            "seen": seen,
+            "true_item": target_item,
         }
 
     # Pre-rank learned candidates
@@ -136,15 +157,15 @@ def run_ablation_study(
             d["learned_ranked"] = engine.ranker.rank(d["feats"])
 
     variants = {
-        "Popularity Baseline": {"type": "pop"},
-        "SVD Only": {"type": "weighted", "alpha": 1.0},
-        "SVD + Popularity (Weighted Baseline)": {"type": "weighted", "alpha": 0.85},
-        "Stage-2 Learned Ranker": {"type": "learned_no_div"},
-        "Full Pipeline (Learned + MMR)": {"type": "learned_mmr", "div_lambda": 0.05, "pool_k": 40},
-        "MMR Pool 20": {"type": "learned_mmr", "div_lambda": 0.05, "pool_k": 20},
-        "MMR Pool 40": {"type": "learned_mmr", "div_lambda": 0.05, "pool_k": 40},
-        "MMR Pool 100": {"type": "learned_mmr", "div_lambda": 0.05, "pool_k": 100},
-        "MMR Pool 200": {"type": "learned_mmr", "div_lambda": 0.05, "pool_k": 200},
+        "B0 Popularity": {"type": "pop"},
+        "B1 SVD Collaborative": {"type": "svd"},
+        "B2 Multi-Source Retrieval": {"type": "retrieval"},
+        "B3 Multi-Source + XGBRanker": {"type": "learned_no_div"},
+        "P1 B3 + Diversity Policy": {
+            "type": "learned_mmr",
+            "div_lambda": float(engine.config.get("diversity_lambda", 0.95)),
+            "pool_k": 40,
+        },
     }
 
     results: dict[str, Any] = {}
@@ -163,11 +184,18 @@ def run_ablation_study(
             if v_type == "pop":
                 seen = d["seen"]
                 preds = [it for it in popular_items if it not in seen][:k]
-            elif v_type == "weighted":
-                alpha = var_cfg["alpha"]
-                scorer = TwoStageRanker(latent_weight=alpha)
-                ranked = scorer.rank(d["feats"])
+            elif v_type == "svd":
+                svd_candidates = engine.svd_retriever.retrieve(
+                    u_id,
+                    k=cand_k,
+                    filter_seen=True,
+                    seen_items_override=d["seen"],
+                )
+                svd_feats = engine.feature_builder.build_features(svd_candidates, user_id=u_id)
+                ranked = TwoStageRanker(latent_weight=1.0).rank(svd_feats)
                 preds = [r.item_id for r in ranked[:k]]
+            elif v_type == "retrieval":
+                preds = [candidate.item_id for candidate in d["cands"][:k]]
             elif v_type == "learned_no_div":
                 ranked = d.get("learned_ranked", engine.ranker.rank(d["feats"]))
                 preds = [r.item_id for r in ranked[:k]]

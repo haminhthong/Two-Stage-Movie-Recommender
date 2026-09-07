@@ -9,10 +9,12 @@ phân tích điểm số (debug scores) và giải thích đề xuất (light ex
 from __future__ import annotations
 
 from typing import Annotated, Any
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Path, Query
 from pydantic import BaseModel, Field
 
+from .artifacts.loader import ArtifactValidationError
 from .recommender import Recommender
 from .utils import load_json
 
@@ -23,7 +25,7 @@ app = FastAPI(
         "Stage-2 Learned Ranker + MMR Genre Diversity Reranking) kèm giải thích "
         "và giám sát chiến lược phục vụ thời gian thực."
     ),
-    version="4.0.0",
+    version="5.0.0",
 )
 
 _recommender: Recommender | None = None
@@ -55,6 +57,8 @@ class RecommendationItemSchema(BaseModel):
     explanation: str | None = Field(
         None, description="Lý do giải thích tại sao sản phẩm này được gợi ý"
     )
+    rank: int | None = Field(None, description="Thứ hạng trong danh sách cuối")
+    reason_codes: list[str] = Field(default_factory=list, description="Mã lý do có bằng chứng")
 
 
 class RecommendationResponseSchema(BaseModel):
@@ -76,6 +80,11 @@ class RecommendationResponseSchema(BaseModel):
     latencies_ms: dict[str, float] | None = Field(
         None, description="Độ trễ xử lý từng giai đoạn đo được trong request"
     )
+    recommendations: list[RecommendationItemSchema] = Field(
+        default_factory=list, description="Payload recommendation chuẩn hóa"
+    )
+    pipeline: dict[str, int] | None = Field(None, description="Số lượng item qua từng tầng")
+    request_id: str | None = None
 
 
 class ColdStartRequestSchema(BaseModel):
@@ -114,7 +123,7 @@ def health_check() -> dict[str, Any]:
     """Kiểm tra trạng thái sẵn sàng hoạt động của ứng dụng và mô hình AI."""
     try:
         recommender = get_recommender()
-    except (OSError, ValueError, KeyError) as exc:
+    except (ArtifactValidationError, OSError, ValueError, KeyError) as exc:
         return {
             "status": "degraded",
             "model_ready": False,
@@ -124,7 +133,7 @@ def health_check() -> dict[str, Any]:
     return {
         "status": "ok",
         "model_ready": True,
-        "model_version": recommender.config.get("version", "v4.0.0"),
+        "model_version": recommender.config.get("version", "unknown"),
     }
 
 
@@ -137,13 +146,16 @@ def get_recommendation(
     user_id: Annotated[int, Path(ge=1, description="ID người dùng cần gợi ý")],
     k: int = Query(10, ge=1, le=50, description="Số lượng gợi ý tối đa (1-50)"),
     diversity: float = Query(
-        0.05, ge=0.0, le=1.0, description="Hệ số phạt đa dạng thể loại MMR"
+        0.95, ge=0.0, le=1.0, description="Trọng số giữ độ liên quan trong MMR; càng cao càng ít hy sinh relevance"
     ),
     include_metadata: bool = Query(
         False, description="Đặt True để trả về chi tiết tên và thể loại phim"
     ),
     include_scores: bool = Query(
         False, description="Đặt True để trả về bảng phân rã điểm chi tiết và độ trễ"
+    ),
+    debug: bool = Query(
+        False, description="Bật thông tin debug scores/latency; mặc định tắt"
     ),
     recent_items: str | None = Query(
         None, description="Danh sách ID phim xem gần đây, phân tách bởi dấu phẩy (ví dụ: '1,2,3')"
@@ -156,7 +168,17 @@ def get_recommendation(
     """
     recent_item_ids: list[int] | None = None
     if recent_items:
-        recent_item_ids = [int(x.strip()) for x in recent_items.split(",") if x.strip().isdigit()]
+        try:
+            recent_item_ids = [
+                int(value.strip())
+                for value in recent_items.split(",")
+                if value.strip()
+            ]
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="recent_items phải là danh sách ID số, phân tách bởi dấu phẩy.",
+            ) from exc
 
     try:
         recommender = get_recommender()
@@ -165,8 +187,10 @@ def get_recommendation(
             k=k,
             diversity_lambda=diversity,
             recent_item_ids=recent_item_ids,
+            debug=include_scores or debug,
+            request_id=uuid4().hex,
         )
-    except (OSError, ValueError, KeyError) as exc:
+    except (ArtifactValidationError, OSError, ValueError, KeyError) as exc:
         raise HTTPException(
             status_code=503, detail="Mô hình gợi ý chưa sẵn sàng hoặc gặp lỗi artifact."
         ) from exc
@@ -186,6 +210,8 @@ def get_recommendation(
                 "interaction_count": item["interaction_count"],
                 "scores": item["scores"] if include_scores else None,
                 "explanation": item.get("explanation"),
+                "rank": item.get("rank"),
+                "reason_codes": item.get("reason_codes", []),
             }
             output_items.append(item_dict)
 
@@ -194,8 +220,23 @@ def get_recommendation(
         "strategy": strategy,
         "items": output_items,
         "includes_metadata": include_metadata,
-        "model_version": recommender.config.get("version", "v4.0.0"),
+        "model_version": recommender.config.get("version", "unknown"),
         "latencies_ms": detailed_res["latencies_ms"] if include_scores else None,
+        "recommendations": [
+            {
+                "item_id": item["item_id"],
+                "title": item.get("title"),
+                "genres": item.get("genres", []),
+                "interaction_count": item.get("interaction_count", 0),
+                "scores": item.get("scores") if debug or include_scores else None,
+                "explanation": item.get("explanation"),
+                "rank": item.get("rank"),
+                "reason_codes": item.get("reason_codes", []),
+            }
+            for item in items_raw
+        ],
+        "pipeline": detailed_res.get("pipeline"),
+        "request_id": detailed_res.get("request_id"),
     }
 
 
@@ -213,7 +254,7 @@ def cold_start_recommendation(
         item_ids, strategy, enriched = recommender._engine.cold_start_recommend(
             preferred_genres=body.preferred_genres, k=body.k
         )
-    except (OSError, ValueError, KeyError) as exc:
+    except (ArtifactValidationError, OSError, ValueError, KeyError) as exc:
         raise HTTPException(
             status_code=503, detail="Mô hình gợi ý chưa sẵn sàng hoặc gặp lỗi artifact."
         ) from exc
@@ -222,5 +263,5 @@ def cold_start_recommendation(
         "strategy": strategy,
         "preferred_genres": body.preferred_genres or [],
         "items": enriched,
-        "model_version": recommender.config.get("version", "v4.0.0"),
+        "model_version": recommender.config.get("version", "unknown"),
     }

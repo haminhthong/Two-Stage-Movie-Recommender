@@ -13,6 +13,50 @@ from __future__ import annotations
 import pandas as pd
 
 
+def seen_items_before(
+    df: pd.DataFrame,
+    user_id: int,
+    as_of_timestamp: int,
+) -> set[int]:
+    """Lấy toàn bộ item user đã tương tác trước mốc request/target."""
+    history = df[
+        (df["user_id"] == user_id) & (df["timestamp"] < int(as_of_timestamp))
+    ]
+    return set(history["item_id"].astype(int).tolist())
+
+
+def global_temporal_windows(
+    df: pd.DataFrame,
+    train_fraction: float = 0.60,
+    rank_fraction: float = 0.15,
+    validation_fraction: float = 0.15,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Tạo expanding global temporal windows cho backtest cross-user.
+
+    Các dòng được sắp theo timestamp toàn cục; vì vậy snapshot của mỗi window
+    không thể lấy dữ liệu từ tương lai của user khác.
+    """
+    if not 0 < train_fraction < 1 or rank_fraction < 0 or validation_fraction < 0:
+        raise ValueError("Các tỷ lệ temporal window không hợp lệ.")
+    if train_fraction + rank_fraction + validation_fraction >= 1:
+        raise ValueError("Tổng train/rank/validation phải nhỏ hơn 1.")
+
+    ordered = df.sort_values(["timestamp", "user_id", "item_id"]).reset_index(drop=True)
+    row_count = len(ordered)
+    train_end = max(1, int(row_count * train_fraction))
+    rank_end = max(train_end, int(row_count * (train_fraction + rank_fraction)))
+    val_end = max(
+        rank_end,
+        int(row_count * (train_fraction + rank_fraction + validation_fraction)),
+    )
+    return (
+        ordered.iloc[:train_end].copy(),
+        ordered.iloc[train_end:rank_end].copy(),
+        ordered.iloc[rank_end:val_end].copy(),
+        ordered.iloc[val_end:].copy(),
+    )
+
+
 def time_split(
     df: pd.DataFrame,
     rating_threshold: float = 4.0,
@@ -24,7 +68,8 @@ def time_split(
     - Validation: Tương tác tích cực kề cuối (pos_rank = 1).
     - Train: Toàn bộ tương tác diễn ra trước mốc thời gian của Validation (timestamp < val_timestamp).
     """
-    positive_df = df[df["rating"] >= rating_threshold].copy()
+    positive_df = df.sort_values(["user_id", "timestamp", "item_id"]).copy()
+    positive_df = positive_df[positive_df["rating"] >= rating_threshold].copy()
     user_pos_counts = positive_df.groupby("user_id").size()
     eligible_users = user_pos_counts[user_pos_counts >= min_positive].index
 
@@ -46,6 +91,7 @@ def temporal_split_four_way(
     df: pd.DataFrame,
     rating_threshold: float = 4.0,
     min_positive: int = 4,
+    protocol: str = "per_user",
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Phân chia 4 tập độc lập theo thời gian (4-Way Per-User Temporal Holdout).
 
@@ -63,7 +109,13 @@ def temporal_split_four_way(
     Returns:
         tuple: (retrieval_train_df, rank_train_df, val_df, test_df)
     """
-    positive_df = df[df["rating"] >= rating_threshold].copy()
+    if protocol == "global":
+        return global_temporal_windows(df)
+    if protocol != "per_user":
+        raise ValueError("protocol phải là 'per_user' hoặc 'global'.")
+
+    positive_df = df.sort_values(["user_id", "timestamp", "item_id"]).copy()
+    positive_df = positive_df[positive_df["rating"] >= rating_threshold].copy()
     user_pos_counts = positive_df.groupby("user_id").size()
     eligible_users = user_pos_counts[user_pos_counts >= min_positive].index
 

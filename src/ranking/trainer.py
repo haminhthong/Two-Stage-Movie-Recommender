@@ -1,4 +1,4 @@
-"""Module huấn luyện mô hình Stage-2 Learned Ranker."""
+"""Huấn luyện group-aware learning-to-rank cho Stage 2."""
 
 from __future__ import annotations
 
@@ -22,9 +22,9 @@ def train_learned_ranker(
 
     Args:
         X: Ma trận đặc trưng (N_samples, N_features).
-        y: Nhãn nhị phân (1 = positive target, 0 = candidate negative).
-        groups: Số lượng candidate cho mỗi user group.
-        model_type: Loại mô hình ("xgboost", "logistic_regression").
+        y: Nhãn nhị phân (1 = positive target, 0 = sampled candidate negative).
+        groups: Số lượng candidate của từng query/user group.
+        model_type: ``xgboost``/``xgb_ranker`` hoặc fallback ``logistic_regression``.
         seed: Random seed.
 
     Returns:
@@ -32,6 +32,14 @@ def train_learned_ranker(
     """
     if len(X) == 0 or len(y) == 0:
         raise ValueError("Dữ liệu huấn luyện ranking rỗng!")
+    if len(X) != len(y):
+        raise ValueError("Số dòng X và y không khớp.")
+
+    if groups is None:
+        groups = np.array([len(y)], dtype=np.int32)
+    groups = np.asarray(groups, dtype=np.int32)
+    if np.any(groups <= 0) or int(groups.sum()) != len(y):
+        raise ValueError("groups phải dương và tổng groups phải bằng số dòng y.")
 
     LOGGER.info(
         "Bắt đầu huấn luyện Stage-2 Learned Ranker (Type: %s) trên %d mẫu (Positive rate: %.2f%%)...",
@@ -40,25 +48,26 @@ def train_learned_ranker(
         float(np.mean(y) * 100),
     )
 
-    if model_type == "xgboost":
+    if model_type in {"xgboost", "xgb_ranker", "lambdamart"}:
         try:
             import xgboost as xgb
 
-            estimator = xgb.XGBClassifier(
+            estimator = xgb.XGBRanker(
                 n_estimators=100,
                 max_depth=4,
                 learning_rate=0.08,
                 subsample=0.8,
                 colsample_bytree=0.8,
                 random_state=seed,
-                eval_metric="logloss",
+                objective="rank:ndcg",
+                eval_metric="ndcg@10",
                 n_jobs=-1,
             )
-            estimator.fit(X, y)
-            LOGGER.info("Đã hoàn thành huấn luyện XGBoost Ranker.")
-            return LearnedRanker(estimator=estimator, model_type="xgboost")
+            estimator.fit(X, y, group=groups)
+            LOGGER.info("Đã hoàn thành huấn luyện XGBRanker rank:ndcg trên %d query groups.", len(groups))
+            return LearnedRanker(estimator=estimator, model_type="xgb_ranker")
         except ImportError:
-            LOGGER.warning("Không tìm thấy thư viện xgboost, tự động chuyển sang LogisticRegression.")
+            LOGGER.warning("Không có xgboost; fallback LogisticRegression chỉ là pointwise.")
             model_type = "logistic_regression"
 
     if model_type == "logistic_regression":

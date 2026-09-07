@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Iterable
+
 from .base import Candidate, CandidateRetriever
 
 
@@ -36,13 +38,18 @@ class GenreRetriever(CandidateRetriever):
         user_id: int,
         k: int = 50,
         filter_seen: bool = True,
+        seen_items_override: Iterable[int] | None = None,
     ) -> list[Candidate]:
         """Trích xuất top-k phim thuộc thể loại ưa thích nhất của user."""
         if k <= 0:
             return []
 
         user_profile = self.user_genre_profiles.get(user_id, {})
-        seen = self.seen_by_user.get(user_id, set()) if filter_seen else set()
+        seen = (
+            set(seen_items_override)
+            if filter_seen and seen_items_override is not None
+            else self.seen_by_user.get(user_id, set()) if filter_seen else set()
+        )
 
         if not user_profile:
             # Fallback nếu user chưa có genre profile
@@ -59,6 +66,8 @@ class GenreRetriever(CandidateRetriever):
                         retrieval_source="genre",
                         retrieval_rank=rank,
                         source_scores={"genre": sc},
+                        genre_score=sc,
+                        genre_rank=rank + 1,
                     )
                 )
                 rank += 1
@@ -89,6 +98,8 @@ class GenreRetriever(CandidateRetriever):
                         retrieval_source="genre",
                         retrieval_rank=rank,
                         source_scores={"genre": genre_score},
+                        genre_score=genre_score,
+                        genre_rank=rank + 1,
                     )
                 )
                 rank += 1

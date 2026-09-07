@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Iterable
+
 from .base import Candidate, CandidateRetriever
 
 
@@ -30,6 +32,7 @@ class PopularityRetriever(CandidateRetriever):
         user_id: int,
         k: int = 200,
         filter_seen: bool = True,
+        seen_items_override: Iterable[int] | None = None,
     ) -> list[Candidate]:
         """Trích xuất top-k phim phổ biến nhất (loại bỏ phim đã xem nếu filter_seen=True).
 
@@ -44,7 +47,11 @@ class PopularityRetriever(CandidateRetriever):
         if k <= 0:
             return []
 
-        seen = self.seen_by_user.get(user_id, set()) if filter_seen else set()
+        seen = (
+            set(seen_items_override)
+            if filter_seen and seen_items_override is not None
+            else self.seen_by_user.get(user_id, set()) if filter_seen else set()
+        )
         candidates: list[Candidate] = []
 
         rank = 0
@@ -59,6 +66,8 @@ class PopularityRetriever(CandidateRetriever):
                     retrieval_source="popularity",
                     retrieval_rank=rank,
                     source_scores={"popularity": score},
+                    popularity_score=score,
+                    popularity_rank=rank + 1,
                 )
             )
             rank += 1

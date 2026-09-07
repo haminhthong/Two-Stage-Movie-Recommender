@@ -45,14 +45,16 @@ def create_split_manifest(
     test_df: pd.DataFrame,
     rating_threshold: float = 4.0,
     min_positive: int = 4,
+    protocol: str = "per_user_temporal_holdout",
 ) -> dict[str, Any]:
     """Tạo bảng kê phân chia tập dữ liệu (Split Manifest) bảo đảm tính lặp lại."""
     pos_retrieval = int((retrieval_train_df["rating"] >= rating_threshold).sum())
     return {
-        "protocol": "per_user_temporal_holdout",
+        "protocol": protocol,
         "description": (
-            "Per-user leave-last-3 positive split. Target timestamps: "
-            "t_retrieval < t_rank < t_val < t_test per user. Eliminates future lookahead leakage."
+            "Per-user leave-last-3 positive split for the baseline protocol. "
+            "For strict cross-user backtests use global_temporal_windows; every "
+            "point-in-time feature must use timestamp < as_of."
         ),
         "rating_threshold": float(rating_threshold),
         "min_positive": int(min_positive),

@@ -12,8 +12,18 @@ from .data.interactions import (
 )
 from .data.loader import compute_file_sha256, load_movies, load_ratings
 from .data.manifest import create_data_manifest, create_split_manifest
-from .data.schema import DataContract, InteractionEvent, MovieMetadata
-from .data.split import temporal_split_four_way, time_split
+from .data.schema import (
+    DataContract,
+    InteractionEvent,
+    MovieMetadata,
+    RecommendationContext,
+)
+from .data.split import (
+    global_temporal_windows,
+    seen_items_before,
+    temporal_split_four_way,
+    time_split,
+)
 
 __all__ = [
     "load_ratings",
@@ -29,4 +39,7 @@ __all__ = [
     "InteractionEvent",
     "MovieMetadata",
     "DataContract",
+    "RecommendationContext",
+    "seen_items_before",
+    "global_temporal_windows",
 ]

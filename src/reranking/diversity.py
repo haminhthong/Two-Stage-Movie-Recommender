@@ -14,6 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
+import numpy as np
+
 from ..ranking.features import CandidateFeatures
 from ..ranking.scorer import RankedCandidate
 
@@ -43,7 +45,7 @@ class DiversityReranker:
     def __init__(
         self,
         genre_map: dict[int, set[str]] | None = None,
-        default_lambda: float = 0.05,
+        default_lambda: float = 0.95,
         default_rerank_pool_k: int = 40,
     ) -> None:
         """Khởi tạo DiversityReranker."""
@@ -84,7 +86,8 @@ class DiversityReranker:
     ) -> list[ScoredRecommendation]:
         """Thực hiện quy trình chọn tham lam MMR-style để lấy Top-K.
 
-        Công thức: Score(i) = Relevance(i) - lambda * max_{s in Selected} Jaccard(i, s)
+        Công thức: MMR(i) = lambda * R_norm(i) - (1 - lambda) * maxSim(i, S).
+        R_norm được normalize trong chính pool để không phụ thuộc scale model.
         """
         if not candidates or k <= 0:
             return []
@@ -100,7 +103,7 @@ class DiversityReranker:
         pool_k = rerank_pool_k if rerank_pool_k is not None else self.default_rerank_pool_k
         pool = list(candidates[:pool_k])
 
-        # Nếu lambda == 0.0, trả về nguyên trạng thứ tự xếp hạng của ranker
+        # Lambda 0 là compatibility mode: tắt MMR và giữ retrieval/ranking order.
         if diversity_lambda <= 1e-9:
             return [
                 ScoredRecommendation(
@@ -112,6 +115,17 @@ class DiversityReranker:
                 )
                 for c in pool[:k]
             ]
+
+        raw_relevance = np.asarray(
+            [candidate.relevance_score for candidate in pool], dtype=np.float32
+        )
+        min_relevance = float(raw_relevance.min())
+        max_relevance = float(raw_relevance.max())
+        relevance_range = max_relevance - min_relevance
+        if relevance_range <= 1e-9:
+            normalized_relevance = np.ones(len(pool), dtype=np.float32)
+        else:
+            normalized_relevance = (raw_relevance - min_relevance) / relevance_range
 
         selected: list[ScoredRecommendation] = []
         selected_item_ids: list[int] = []
@@ -138,8 +152,12 @@ class DiversityReranker:
                                     if max_sim == 1.0:
                                         break
 
-                penalty = diversity_lambda * max_sim
-                marginal_score = cand.relevance_score - penalty
+                relevance_weight = diversity_lambda
+                diversity_weight = 1.0 - diversity_lambda
+                penalty = diversity_weight * max_sim
+                marginal_score = (
+                    relevance_weight * float(normalized_relevance[idx]) - penalty
+                )
 
                 if marginal_score > best_marginal_score:
                     best_marginal_score = marginal_score

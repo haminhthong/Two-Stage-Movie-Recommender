@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 
 from ..artifacts.loader import load_production_bundle
+from ..data.schema import RecommendationContext
 from ..ranking.features import CandidateFeatureBuilder
 from ..ranking.model import LearnedRanker, WeightedFusionRanker
 from ..ranking.scorer import TwoStageRanker
@@ -102,8 +103,9 @@ class TwoStageRecommenderEngine:
             }
         )
 
-        # Mặc định sử dụng SVD retriever (hoặc MultiSource nếu config chỉ định)
-        use_multi = bool(self.config.get("multi_source_retrieval", False))
+        # Release mới luôn dùng canonical multi-source; chỉ release cũ mới có
+        # thể ghi rõ false để đọc artifact trước migration.
+        use_multi = bool(self.config.get("multi_source_retrieval", True))
         self.retriever = self.multi_retriever if use_multi else self.svd_retriever
 
         # Khởi tạo Feature Builder
@@ -117,11 +119,12 @@ class TwoStageRecommenderEngine:
 
         # Đọc siêu tham số
         default_alpha = float(self.config.get("latent_weight", 0.9))
-        default_lambda = float(self.config.get("diversity_lambda", 0.05))
+        default_lambda = float(self.config.get("diversity_lambda", 0.95))
         self.rerank_pool_k = int(self.config.get("rerank_pool_k", 40))
 
         # Khởi tạo Stage 2 Ranker
-        if self.learned_ranker is not None:
+        ranker_enabled = bool(self.config.get("ranker_enabled", False))
+        if self.learned_ranker is not None and ranker_enabled:
             self.ranker = TwoStageRanker(
                 rank_model=self.learned_ranker,
                 latent_weight=default_alpha,
@@ -170,14 +173,22 @@ class TwoStageRecommenderEngine:
         diversity_lambda: float | None = None,
         latent_weight: float | None = None,
         recent_item_ids: list[int] | None = None,
+        debug: bool = False,
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         """Tạo gợi ý chi tiết kèm đo độ trễ và phân tích điểm số từng chặng."""
         t_start = time.perf_counter()
 
         # Kiểm tra Cold Start
+        request_context = RecommendationContext.from_items(
+            user_id=user_id,
+            seen_item_ids=self.seen_by_user.get(user_id, set()),
+            recent_item_ids=recent_item_ids or (),
+        )
+
         if user_id not in self.user_map:
             item_ids, strategy = self.cold_start_policy.get_recommendations(
-                k=k, seen_items=self.seen_by_user.get(user_id, set())
+                k=k, seen_items=set(request_context.effective_seen_items)
             )
             total_ms = (time.perf_counter() - t_start) * 1000.0
             enriched = self.cold_start_policy.enrich_items(item_ids)
@@ -191,24 +202,30 @@ class TwoStageRecommenderEngine:
                     "diversity": 0.0,
                     "total": total_ms,
                 },
+                "model_version": self.version_name,
+                "pipeline": {
+                    "candidate_count": 0,
+                    "ranked_count": 0,
+                    "rerank_pool_count": 0,
+                },
             }
 
         # Stage 1: Candidate Retrieval
         t_ret_start = time.perf_counter()
         candidate_k = int(self.config.get("candidate_k", 200))
 
-        # Hỗ trợ fresh user behavior: bổ sung recent_item_ids vào seen
-        if recent_item_ids:
-            seen_combined = self.seen_by_user.get(user_id, set()) | set(recent_item_ids)
-            # Tạm thời gán seen mở rộng
-            orig_seen = self.retriever.seen_by_user.get(user_id, set())
-            self.retriever.seen_by_user[user_id] = seen_combined
-            candidates = self.retriever.retrieve(user_id=user_id, k=candidate_k, filter_seen=True)
-            self.retriever.seen_by_user[user_id] = orig_seen
-        else:
-            candidates = self.retriever.retrieve(user_id=user_id, k=candidate_k, filter_seen=True)
+        candidates = self.retriever.retrieve(
+            user_id=user_id,
+            k=candidate_k,
+            filter_seen=True,
+            seen_items_override=request_context.effective_seen_items,
+        )
 
         retrieval_ms = (time.perf_counter() - t_ret_start) * 1000.0
+        retrieval_source_counts = {
+            source: sum(1 for candidate in candidates if source in candidate.source_scores)
+            for source in ("svd", "popularity", "genre")
+        }
 
         if not candidates:
             item_ids, strategy = self.cold_start_policy.get_recommendations(k=k)
@@ -223,11 +240,21 @@ class TwoStageRecommenderEngine:
                     "diversity": 0.0,
                     "total": total_ms,
                 },
+                "model_version": self.version_name,
+                "pipeline": {
+                    "candidate_count": 0,
+                    "ranked_count": 0,
+                    "rerank_pool_count": 0,
+                },
             }
 
         # Stage 2: Feature Engineering & Ranking
         t_rank_start = time.perf_counter()
-        features = self.feature_builder.build_features(candidates, user_id=user_id)
+        features = self.feature_builder.build_features(
+            candidates,
+            user_id=user_id,
+            as_of_timestamp=request_context.as_of_timestamp,
+        )
         ranked_candidates = self.ranker.rank(features, latent_weight_override=latent_weight)
         ranking_ms = (time.perf_counter() - t_rank_start) * 1000.0
 
@@ -241,6 +268,21 @@ class TwoStageRecommenderEngine:
         )
         diversity_ms = (time.perf_counter() - t_div_start) * 1000.0
         total_ms = (time.perf_counter() - t_start) * 1000.0
+        LOGGER.info(
+            "recommendation_request request_id=%s model_version=%s strategy=personalized "
+            "candidate_count=%d ranking_count=%d top_k=%d retrieval_ms=%.3f "
+            "ranking_ms=%.3f rerank_ms=%.3f total_ms=%.3f source_counts=%s",
+            request_id or "-",
+            self.version_name,
+            len(candidates),
+            len(ranked_candidates),
+            len(final_recommendations),
+            retrieval_ms,
+            ranking_ms,
+            diversity_ms,
+            total_ms,
+            retrieval_source_counts,
+        )
 
         enriched_items: list[dict[str, Any]] = []
         for rank_idx, rec in enumerate(final_recommendations):
@@ -253,12 +295,24 @@ class TwoStageRecommenderEngine:
             aff_sc = rec.features.genre_affinity if rec.features else 0.0
 
             # Explanation
-            if aff_sc > 0.3:
-                explanation = f"High genre affinity with your taste in {genres[:2]}"
-            elif lat_sc > 0.6:
-                explanation = "Strong collaborative match with similar users"
-            else:
-                explanation = "Popular title with broad community acclaim"
+            reason_codes: list[str] = []
+            if rec.features and rec.features.retrieved_by_svd and lat_sc >= 0.5:
+                reason_codes.append("COLLABORATIVE_MATCH")
+            if aff_sc > 0.0:
+                reason_codes.append("GENRE_MATCH")
+            if rec.features and rec.features.retrieved_by_popularity:
+                reason_codes.append("POPULARITY_SIGNAL")
+            if not reason_codes:
+                reason_codes.append("RETRIEVAL_MATCH")
+            explanation = _build_evidence_explanation(reason_codes, genres)
+
+            score_payload = {
+                "retrieval": round(lat_sc, 4),
+                "popularity": round(pop_sc, 4),
+                "ranking": round(rec.relevance_score, 4),
+                "diversity_penalty": round(rec.diversity_penalty, 4),
+                "final": round(rec.final_score, 4),
+            }
 
             enriched_items.append(
                 {
@@ -266,13 +320,9 @@ class TwoStageRecommenderEngine:
                     "title": self.titles_map.get(item_id, f"Movie {item_id}"),
                     "genres": genres,
                     "interaction_count": pop_cnt,
-                    "scores": {
-                        "retrieval": round(lat_sc, 4),
-                        "popularity": round(pop_sc, 4),
-                        "ranking": round(rec.relevance_score, 4),
-                        "diversity_penalty": round(rec.diversity_penalty, 4),
-                        "final": round(rec.final_score, 4),
-                    },
+                    "rank": rank_idx + 1,
+                    "reason_codes": reason_codes,
+                    "scores": score_payload if debug else None,
                     "explanation": explanation,
                 }
             )
@@ -281,12 +331,22 @@ class TwoStageRecommenderEngine:
             "user_id": user_id,
             "strategy": "two_stage_personalized",
             "items": enriched_items,
+            "model_version": self.version_name,
             "latencies_ms": {
                 "retrieval": retrieval_ms,
                 "ranking": ranking_ms,
                 "diversity": diversity_ms,
+                "reranking": diversity_ms,
                 "total": total_ms,
             },
+            "pipeline": {
+                "candidate_count": len(candidates),
+                "ranked_count": len(ranked_candidates),
+                "rerank_pool_count": min(self.rerank_pool_k, len(ranked_candidates)),
+            },
+            "retrieval_source_counts": retrieval_source_counts,
+            "fallback_reason": None,
+            "request_id": request_id,
         }
 
     def recommend(
@@ -332,3 +392,15 @@ class TwoStageRecommenderEngine:
             }
             for item in detail["items"]
         ]
+
+
+def _build_evidence_explanation(reason_codes: list[str], genres: list[str]) -> str:
+    """Tạo explanation dựa trên tín hiệu thực tế, không kể chuyện causal."""
+    if "COLLABORATIVE_MATCH" in reason_codes:
+        return "High collaborative retrieval score"
+    if "GENRE_MATCH" in reason_codes:
+        labels = ", ".join(genres[:2]) if genres else "your preferred genres"
+        return f"Matches your historical genre preferences: {labels}"
+    if "POPULARITY_SIGNAL" in reason_codes:
+        return "Popular among active users"
+    return "Retrieved as a relevant unseen title"

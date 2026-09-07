@@ -1,0 +1,10 @@
+# Candidate contract dùng giống nhau ở train, dev, locked test và serving.
+candidate_k: 200
+sources:
+  svd: 150
+  popularity: 50
+  genre: 50
+merge:
+  method: rrf
+  rrf_k: 60
+seen_filter: request_time
