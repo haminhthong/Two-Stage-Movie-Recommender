@@ -3,7 +3,7 @@
 [![CI](https://github.com/haminhthong/Two-Stage-Movie-Recommender/actions/workflows/ci.yml/badge.svg)](https://github.com/haminhthong/Two-Stage-Movie-Recommender/actions/workflows/ci.yml)
 [![Python Version](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.116-green.svg)](https://fastapi.tiangolo.com/)
-[![NumPy](https://img.shields.io/badge/NumPy-2.2-013243.svg)](https://numpy.org/)
+[![NumPy](https://img.shields.io/badge/NumPy-1.26-013243.svg)](https://numpy.org/)
 [![pandas](https://img.shields.io/badge/pandas-2.3-150458.svg)](https://pandas.pydata.org/)
 [![SciPy](https://img.shields.io/badge/SciPy-1.15-8CAAE6.svg)](https://scipy.org/)
 [![scikit--learn](https://img.shields.io/badge/scikit--learn-1.7-F7931E.svg)](https://scikit-learn.org/)
@@ -62,7 +62,7 @@ Snapshot cũ ghi nhận p50/p95 lần lượt là 3.24/14.69 ms cho retrieval, 4
 
 Input là lịch sử rating MovieLens 1M gồm user, movie, rating, timestamp và genres. Hệ thống biến rating thành implicit positive khi rating >= 4.0, đồng thời giữ toàn bộ interaction trước thời điểm request cho seen-item filtering.
 
-Output là danh sách tối đa K=10 movie chưa từng xuất hiện trong lịch sử của user tại thời điểm request. Pipeline ưu tiên:
+Output mặc định là 10 movie chưa từng xuất hiện trong lịch sử của user tại thời điểm request; API cho phép `k` từ 1 đến 50. Pipeline ưu tiên:
 
 1. Không rò rỉ tương lai qua split hoặc feature snapshot.
 2. Đưa item đúng vào candidate pool trước khi tối ưu rank.
