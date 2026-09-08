@@ -221,7 +221,11 @@ def get_recommendation(
         "items": output_items,
         "includes_metadata": include_metadata,
         "model_version": recommender.config.get("version", "unknown"),
-        "latencies_ms": detailed_res["latencies_ms"] if include_scores else None,
+        # `debug` cũng bật đo lường trong engine; giữ response nhất quán với
+        # mô tả query thay vì chỉ trả latency khi include_scores=True.
+        "latencies_ms": (
+            detailed_res["latencies_ms"] if debug or include_scores else None
+        ),
         "recommendations": [
             {
                 "item_id": item["item_id"],

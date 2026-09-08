@@ -172,6 +172,11 @@ def test_api_strategy_field() -> None:
         assert "strategy" in data
         assert data["strategy"] == "two_stage_personalized"
 
+        # debug=True phải trả cả latency vì engine đã bật đo lường cho request.
+        resp_debug = client.get("/recommend/1?k=5&debug=true")
+        assert resp_debug.status_code == 200
+        assert resp_debug.json()["latencies_ms"] is not None
+
     # Unknown user
     resp_unknown = client.get("/recommend/9999999?k=5")
     if resp_unknown.status_code == 200:

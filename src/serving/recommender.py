@@ -21,8 +21,8 @@ import numpy as np
 from ..artifacts.loader import load_production_bundle
 from ..data.schema import RecommendationContext
 from ..ranking.features import CandidateFeatureBuilder
-from ..ranking.model import LearnedRanker, WeightedFusionRanker
-from ..ranking.scorer import TwoStageRanker
+from ..ranking.model import LearnedRanker
+from ..ranking.scorer import RankedCandidate, TwoStageRanker
 from ..reranking.diversity import DiversityReranker, ScoredRecommendation
 from ..retrieval.genre import GenreRetriever
 from ..retrieval.merger import MultiSourceRetriever
@@ -124,6 +124,7 @@ class TwoStageRecommenderEngine:
 
         # Khởi tạo Stage 2 Ranker
         ranker_enabled = bool(self.config.get("ranker_enabled", False))
+        self.ranker_enabled = ranker_enabled and self.learned_ranker is not None
         if self.learned_ranker is not None and ranker_enabled:
             self.ranker = TwoStageRanker(
                 rank_model=self.learned_ranker,
@@ -228,7 +229,10 @@ class TwoStageRecommenderEngine:
         }
 
         if not candidates:
-            item_ids, strategy = self.cold_start_policy.get_recommendations(k=k)
+            item_ids, strategy = self.cold_start_policy.get_recommendations(
+                k=k,
+                seen_items=set(request_context.effective_seen_items),
+            )
             total_ms = (time.perf_counter() - t_start) * 1000.0
             return {
                 "user_id": user_id,
@@ -255,7 +259,23 @@ class TwoStageRecommenderEngine:
             user_id=user_id,
             as_of_timestamp=request_context.as_of_timestamp,
         )
-        ranked_candidates = self.ranker.rank(features, latent_weight_override=latent_weight)
+        if self.ranker_enabled:
+            ranked_candidates = self.ranker.rank(
+                features,
+                latent_weight_override=latent_weight,
+            )
+        else:
+            # Khi ranker bị tắt bởi Dev gate hoặc artifact không sẵn sàng,
+            # fallback phải là thứ tự retrieval đã freeze, không phải một
+            # heuristic khác làm thay đổi contract offline/online.
+            ranked_candidates = [
+                RankedCandidate(
+                    item_id=feature.item_id,
+                    relevance_score=1.0 - index / max(1, len(features)),
+                    features=feature,
+                )
+                for index, feature in enumerate(features)
+            ]
         ranking_ms = (time.perf_counter() - t_rank_start) * 1000.0
 
         # Stage 3: MMR Diversity Reranking với rerank_pool_k đồng nhất (P0.2 fix)

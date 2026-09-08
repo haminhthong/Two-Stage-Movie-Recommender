@@ -31,7 +31,7 @@ from .evaluation.metrics import (
     mrr_at_k,
     novelty_at_k,
 )
-from .ranking.scorer import TwoStageRanker
+from .ranking.scorer import RankedCandidate, TwoStageRanker
 from .recommender import Recommender
 from .utils import LOGGER, save_json, setup_logging
 
@@ -149,10 +149,18 @@ def run_ablation_study(
             "feats": feats,
             "seen": seen,
             "true_item": target_item,
+            "retrieval_ranked": [
+                RankedCandidate(
+                    item_id=feature.item_id,
+                    relevance_score=1.0 - index / max(1, len(feats)),
+                    features=feature,
+                )
+                for index, feature in enumerate(feats)
+            ],
         }
 
     # Pre-rank learned candidates
-    if engine.learned_ranker is not None:
+    if getattr(engine, "ranker_enabled", False):
         for u_id, d in user_data.items():
             d["learned_ranked"] = engine.ranker.rank(d["feats"])
 
@@ -197,10 +205,10 @@ def run_ablation_study(
             elif v_type == "retrieval":
                 preds = [candidate.item_id for candidate in d["cands"][:k]]
             elif v_type == "learned_no_div":
-                ranked = d.get("learned_ranked", engine.ranker.rank(d["feats"]))
+                ranked = d.get("learned_ranked", d["retrieval_ranked"])
                 preds = [r.item_id for r in ranked[:k]]
             elif v_type == "learned_mmr":
-                ranked = d.get("learned_ranked", engine.ranker.rank(d["feats"]))
+                ranked = d.get("learned_ranked", d["retrieval_ranked"])
                 lam = var_cfg["div_lambda"]
                 pool_k = var_cfg["pool_k"]
                 final_recs = engine.diversity_reranker.rerank(
