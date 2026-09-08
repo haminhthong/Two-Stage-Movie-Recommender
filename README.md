@@ -104,7 +104,7 @@ flowchart TD
     G -->|pass| H["✅ Learned ranker"]
     G -->|fail| I["✅ Retrieval-order fallback"]
 
-    H --> J["✅ Rank top 200, keep ranking_k contract"]
+    H --> J["✅ Rank the canonical 200 candidates"]
     I --> J
     J --> K["✅ MMR on rerank_pool_k=40"]
     K --> L["✅ Seen filter and final_k=10"]
@@ -232,9 +232,9 @@ Train tạo Release Candidate dưới models/candidates/<version>. Ranker chỉ 
 
 Serving và evaluation dùng cùng contract:
 
-    candidate_k=200 -> ranking_k=200 -> rerank_pool_k=40 -> final_k=10
+    candidate_k=200 -> rank all 200 -> rerank_pool_k=40 -> final_k=10
 
-MMR tối ưu tuần tự trên top 40 candidate sau retrieval/ranking. Relevance floor và seen filter được áp dụng trước khi trả kết quả. Similarity giữa phim dùng genre bitmask và bit_count:
+MMR tối ưu tuần tự trên top 40 candidate sau retrieval/ranking. Seen filter được áp dụng ở retrieval trước khi ranking và candidate pool được giới hạn ở top 40 trước khi MMR. Similarity giữa phim dùng genre bitmask và bit_count:
 
     intersection = (mask_a & mask_b).bit_count()
     union = (mask_a | mask_b).bit_count()
@@ -311,7 +311,7 @@ Loader kiểm tra:
 Ví dụ promote sau khi đã xem Dev và Locked Test:
 
 ~~~bash
-python -c "from src.artifacts.release import promote_release; promote_release('models/candidates/vX', 'vX')"
+python -c "from src.artifacts.release import promote_release; from src.utils import load_json; promote_release('models', 'candidates/vX', load_json('reports/test_metrics.json'))"
 ~~~
 
 ## 11. Cấu trúc thư mục
@@ -471,7 +471,7 @@ Container chỉ phục vụ được nếu artifact production và dữ liệu c
 - Ranking feature phải dùng snapshot trước as_of; không dùng aggregate của tương lai.
 - Seen filtering là hard rule và áp dụng ở retrieval/serving.
 - Ranker fallback phải deterministic để dễ audit và không đổi semantics giữa evaluation và serving.
-- MMR tăng diversity nhưng có thể làm giảm relevance; relevance floor và pool 40 là guardrail hiện tại.
+- MMR tăng diversity nhưng có thể làm giảm relevance; pool 40 là guardrail hiện tại.
 - Report lịch sử không thay thế quality gate của release mới.
 
 ## 16. Files quan trọng để review

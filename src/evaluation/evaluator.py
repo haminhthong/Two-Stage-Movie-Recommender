@@ -19,10 +19,14 @@ Final Top-10 post MMR? (final_recall@10, final_ndcg@10, ILD, coverage)
 from __future__ import annotations
 
 import time
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
+
 import numpy as np
 import pandas as pd
 
+from ..data.split import seen_items_before
+from ..ranking.scorer import RankedCandidate
 from .latency import summarize_latencies
 from .metrics import (
     compute_long_tail_distribution,
@@ -35,7 +39,6 @@ from .metrics import (
 )
 from .ranking_metrics import ranker_ndcg_at_k, ranker_recall_at_k
 from .retrieval_metrics import candidate_recall_at_k, target_in_catalog_rate
-from ..data.split import seen_items_before
 
 
 class FullFunnelEvaluator:
@@ -65,7 +68,10 @@ class FullFunnelEvaluator:
 
         total_int = sum(self.popularity_counts.values())
         self.catalog_prob = {
-            item_id: float((self.popularity_counts.get(item_id, 0) + 1) / (total_int + self.total_catalog_size))
+            item_id: float(
+                (self.popularity_counts.get(item_id, 0) + 1)
+                / (total_int + self.total_catalog_size)
+            )
             for item_id in self.catalog_items
         }
 
@@ -80,14 +86,20 @@ class FullFunnelEvaluator:
     ) -> dict[str, Any]:
         """Thực hiện đánh giá trên toàn bộ người dùng tập Test trong một lượt duy nhất (Single-Pass)."""
         eligible_users = [
-            u for u in test_truth
+            u
+            for u in test_truth
             if (hasattr(self.engine, "user_map") and u in self.engine.user_map)
-            or (hasattr(self.engine, "retriever") and u in getattr(self.engine.retriever, "user_map", {}))
+            or (
+                hasattr(self.engine, "retriever")
+                and u in getattr(self.engine.retriever, "user_map", {})
+            )
         ]
 
         if max_users is not None and len(eligible_users) > max_users:
             rng = np.random.default_rng(seed)
-            eligible_users = list(rng.choice(eligible_users, size=max_users, replace=False))
+            eligible_users = list(
+                rng.choice(eligible_users, size=max_users, replace=False)
+            )
 
         eval_users_count = len(eligible_users)
         test_targets = [test_truth[u] for u in eligible_users]
@@ -157,7 +169,11 @@ class FullFunnelEvaluator:
 
             cand_ids = [c.item_id for c in candidates]
             matching_candidate = next(
-                (candidate for candidate in candidates if candidate.item_id == true_item),
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate.item_id == true_item
+                ),
                 None,
             )
             if matching_candidate is not None:
@@ -176,17 +192,27 @@ class FullFunnelEvaluator:
 
             # Stage 2: Feature Building & Ranking
             t1 = time.perf_counter()
-            feat_mat = self.engine.feature_builder.build_feature_matrix(
-                candidates,
-                user_id=u_id,
-                as_of_timestamp=test_timestamp,
-            )
             features = self.engine.feature_builder.build_features(
                 candidates,
                 user_id=u_id,
                 as_of_timestamp=test_timestamp,
             )
-            ranked_cands = self.engine.ranker.rank(features, feature_matrix=feat_mat)
+            if getattr(self.engine, "ranker_enabled", False):
+                ranked_cands = self.engine.ranker.rank(
+                    features,
+                )
+            else:
+                # Evaluation phải dùng đúng fallback của serving khi Dev gate
+                # tắt ranker: giữ thứ tự retrieval, không tự chuyển sang
+                # WeightedFusion vì đó là một pipeline khác.
+                ranked_cands = [
+                    RankedCandidate(
+                        item_id=feature.item_id,
+                        relevance_score=1.0 - index / max(1, len(features)),
+                        features=feature,
+                    )
+                    for index, feature in enumerate(features)
+                ]
             t_rank = (time.perf_counter() - t1) * 1000.0
             t_rank_list.append(t_rank)
 
@@ -194,7 +220,9 @@ class FullFunnelEvaluator:
             rank_recall_10.append(ranker_recall_at_k(ranked_ids, true_item, k=k))
             rank_ndcg_10.append(ranker_ndcg_at_k(ranked_ids, true_item, k=k))
             if matching_candidate is not None:
-                conditional_rank_ndcgs.append(ranker_ndcg_at_k(ranked_ids, true_item, k=k))
+                conditional_rank_ndcgs.append(
+                    ranker_ndcg_at_k(ranked_ids, true_item, k=k)
+                )
                 conditional_rank_mrrs.append(_mrr_from_ids(ranked_ids, true_item, k))
 
             # Stage 3: MMR Diversity Reranking với rerank_pool_k đồng nhất
@@ -232,7 +260,9 @@ class FullFunnelEvaluator:
             pop_mrrs.append(mrr_at_k(pop_preds, true_item))
             pop_novelties.append(novelty_at_k(pop_preds, self.catalog_prob))
 
-        exposure = compute_long_tail_distribution(all_final_recs, self.head_set, self.mid_set, self.tail_set)
+        exposure = compute_long_tail_distribution(
+            all_final_recs, self.head_set, self.mid_set, self.tail_set
+        )
         user_cov = compute_user_coverage(all_final_recs, k=k)
 
         final_rec = _mean(final_recalls)
@@ -277,7 +307,9 @@ class FullFunnelEvaluator:
                     f"recall@{k}": final_rec,
                     f"ndcg@{k}": final_ndcg,
                     f"mrr@{k}": final_mrr,
-                    "catalog_coverage": float(len(recommended_unique) / max(1, self.total_catalog_size)),
+                    "catalog_coverage": float(
+                        len(recommended_unique) / max(1, self.total_catalog_size)
+                    ),
                     "user_coverage": user_cov,
                     "intra_list_diversity": _mean(final_ilds),
                     f"novelty@{k}": _mean(final_novelties),
@@ -290,7 +322,7 @@ class FullFunnelEvaluator:
                 f"recall@{k}": pop_rec,
                 f"ndcg@{k}": pop_ndcg,
                 f"mrr@{k}": pop_mrr,
-                    f"novelty@{k}": _mean(pop_novelties),
+                f"novelty@{k}": _mean(pop_novelties),
             },
             "model_lift_over_popularity": {
                 "absolute_gain": {
@@ -329,9 +361,7 @@ def _target_timestamp(
     """Tìm timestamp target để dựng seen state đúng thời điểm."""
     if events is None or events.empty:
         return None
-    matches = events[
-        (events["user_id"] == user_id) & (events["item_id"] == item_id)
-    ]
+    matches = events[(events["user_id"] == user_id) & (events["item_id"] == item_id)]
     if matches.empty or "timestamp" not in matches:
         return None
     return int(matches.iloc[0]["timestamp"])

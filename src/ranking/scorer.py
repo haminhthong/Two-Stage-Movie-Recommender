@@ -7,8 +7,9 @@ Hỗ trợ cả:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
+
 import numpy as np
 
 from .features import CandidateFeatures

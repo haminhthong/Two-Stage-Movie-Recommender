@@ -107,7 +107,7 @@ class ColdStartPolicy:
                 {
                     "item_id": item_id,
                     "title": self.title_map.get(item_id, f"Movie {item_id}"),
-                    "genres": sorted(list(self.genre_map.get(item_id, set()))),
+                    "genres": sorted(self.genre_map.get(item_id, set())),
                     "interaction_count": int(self.popularity_counts.get(item_id, 0)),
                     "scores": {
                         "retrieval": 0.0,

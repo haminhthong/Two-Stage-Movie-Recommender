@@ -7,14 +7,14 @@ from .scorer import RankedCandidate, TwoStageRanker
 from .trainer import train_learned_ranker
 
 __all__ = [
-    "CandidateFeatures",
-    "CandidateFeatureBuilder",
     "FEATURE_NAMES",
+    "BaseRankModel",
+    "CandidateFeatureBuilder",
+    "CandidateFeatures",
+    "LearnedRanker",
+    "RankDatasetBuilder",
     "RankedCandidate",
     "TwoStageRanker",
-    "BaseRankModel",
-    "LearnedRanker",
     "WeightedFusionRanker",
-    "RankDatasetBuilder",
     "train_learned_ranker",
 ]

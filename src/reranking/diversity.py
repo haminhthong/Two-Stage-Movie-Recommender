@@ -11,8 +11,8 @@ Tối ưu hóa hiệu năng cấp phần cứng:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 import numpy as np
 
@@ -54,7 +54,9 @@ class DiversityReranker:
         self.default_rerank_pool_k = int(default_rerank_pool_k)
 
         # 1. Tiền tính toán bảng ánh xạ thể loại sang Bitmask số nguyên
-        unique_genres = sorted(list({g for genres in self.genre_map.values() for g in genres}))
+        unique_genres = sorted(
+            {g for genres in self.genre_map.values() for g in genres}
+        )
         genre_to_bit = {g: (1 << i) for i, g in enumerate(unique_genres)}
 
         self._genre_bitmask: dict[int, int] = {
@@ -100,7 +102,9 @@ class DiversityReranker:
         diversity_lambda = min(max(diversity_lambda, 0.0), 1.0)
 
         # Cắt pool ứng viên theo rerank_pool_k để đồng nhất pipeline Train/Val/Serving
-        pool_k = rerank_pool_k if rerank_pool_k is not None else self.default_rerank_pool_k
+        pool_k = (
+            rerank_pool_k if rerank_pool_k is not None else self.default_rerank_pool_k
+        )
         pool = list(candidates[:pool_k])
 
         # Lambda 0 là compatibility mode: tắt MMR và giữ retrieval/ranking order.

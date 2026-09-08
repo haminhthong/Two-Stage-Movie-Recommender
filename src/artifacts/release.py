@@ -29,8 +29,13 @@ def promote_release(
     dev_metrics = config.get("dev_metrics", {})
     stage1_ndcg = float(dev_metrics.get("stage1_order_ndcg@10", 0.0))
     ranker_ndcg = float(dev_metrics.get("ranker_ndcg@10", 0.0))
-    if bool(config.get("ranker_enabled", False)) and ranker_ndcg <= stage1_ndcg + min_dev_ndcg_gain:
-        raise ValueError("Release bị từ chối: ranker chưa vượt retrieval order trên Dev.")
+    if (
+        bool(config.get("ranker_enabled", False))
+        and ranker_ndcg <= stage1_ndcg + min_dev_ndcg_gain
+    ):
+        raise ValueError(
+            "Release bị từ chối: ranker chưa vượt retrieval order trên Dev."
+        )
 
     save_json(release_dir / "locked_test_metrics.json", locked_test_metrics)
     save_json(

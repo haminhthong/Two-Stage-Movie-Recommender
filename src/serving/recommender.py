@@ -3,8 +3,8 @@
 Điều phối hoàn chỉnh luồng trực tuyến (Online Serving Flow):
 1. Cold-Start Check -> Nếu user chưa có trong hệ thống, chuyển sang ColdStartPolicy.
 2. Stage 1: Candidate Retrieval (Multi-Source / SVD Dot Product) -> Rút trích ~200 ứng viên, lọc phim đã xem.
-3. Stage 2: Feature Engineering & Learned Ranking -> Chấm điểm bằng Stage-2 Learned Ranker (XGBoost)
-   hoặc Heuristic Weighted Fusion Baseline.
+3. Stage 2: Feature Engineering & Learned Ranking -> Chấm điểm bằng Stage-2 Learned Ranker (XGBoost).
+   Nếu quality gate tắt ranker, giữ nguyên retrieval order.
 4. Stage 3: MMR Diversity Reranking với `rerank_pool_k = 40` đồng nhất với Offline Validation.
 5. Enrichment: Bổ sung metadata (Title, Genres, Popularity, Scores, Latencies).
 """
@@ -12,8 +12,8 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -21,7 +21,6 @@ import numpy as np
 from ..artifacts.loader import load_production_bundle
 from ..data.schema import RecommendationContext
 from ..ranking.features import CandidateFeatureBuilder
-from ..ranking.model import LearnedRanker
 from ..ranking.scorer import RankedCandidate, TwoStageRanker
 from ..reranking.diversity import DiversityReranker, ScoredRecommendation
 from ..retrieval.genre import GenreRetriever
@@ -52,17 +51,27 @@ class TwoStageRecommenderEngine:
         self.user_map: dict[int, int] = self.metadata.get("user_map", {})
         self.item_map: dict[int, int] = self.metadata.get("item_map", {})
         self.items: np.ndarray = np.asarray(self.metadata.get("items", []))
-        self.popular_items: list[int] = [int(x) for x in self.metadata.get("popular", [])]
-        self.popularity_counts: dict[int, int] = self.metadata.get("popularity_counts", {})
-        self.log_popularity_scores: dict[int, float] = self.metadata.get("log_popularity", {})
+        self.popular_items: list[int] = [
+            int(x) for x in self.metadata.get("popular", [])
+        ]
+        self.popularity_counts: dict[int, int] = self.metadata.get(
+            "popularity_counts", {}
+        )
+        self.log_popularity_scores: dict[int, float] = self.metadata.get(
+            "log_popularity", {}
+        )
         self.seen_by_user: dict[int, set[int]] = self.metadata.get("seen", {})
         self.genres_map: dict[int, set[str]] = self.metadata.get("genres", {})
         self.titles_map: dict[int, str] = self.metadata.get("titles", {})
         self.user_genre_profiles: dict[int, dict[str, float]] = self.metadata.get(
             "user_genre_profiles", {}
         )
-        self.user_stats: dict[int, dict[str, float]] = self.metadata.get("user_stats", {})
-        self.item_stats: dict[int, dict[str, float]] = self.metadata.get("item_stats", {})
+        self.user_stats: dict[int, dict[str, float]] = self.metadata.get(
+            "user_stats", {}
+        )
+        self.item_stats: dict[int, dict[str, float]] = self.metadata.get(
+            "item_stats", {}
+        )
 
         # Linear rank để tương thích ngược
         max_denom = max(1, len(self.popular_items) - 1)
@@ -97,9 +106,18 @@ class TwoStageRecommenderEngine:
 
         self.multi_retriever = MultiSourceRetriever(
             retrievers={
-                "svd": (self.svd_retriever, int(self.config.get("svd_candidate_k", 150))),
-                "popularity": (self.popularity_retriever, int(self.config.get("popularity_candidate_k", 50))),
-                "genre": (self.genre_retriever, int(self.config.get("genre_candidate_k", 50))),
+                "svd": (
+                    self.svd_retriever,
+                    int(self.config.get("svd_candidate_k", 150)),
+                ),
+                "popularity": (
+                    self.popularity_retriever,
+                    int(self.config.get("popularity_candidate_k", 50)),
+                ),
+                "genre": (
+                    self.genre_retriever,
+                    int(self.config.get("genre_candidate_k", 50)),
+                ),
             }
         )
 
@@ -133,7 +151,9 @@ class TwoStageRecommenderEngine:
         else:
             self.ranker = TwoStageRanker(
                 latent_weight=default_alpha,
-                genre_affinity_weight=float(self.config.get("genre_affinity_weight", 0.0)),
+                genre_affinity_weight=float(
+                    self.config.get("genre_affinity_weight", 0.0)
+                ),
             )
 
         # Khởi tạo Stage 3 MMR Reranker với rerank_pool_k đồng nhất
@@ -224,7 +244,9 @@ class TwoStageRecommenderEngine:
 
         retrieval_ms = (time.perf_counter() - t_ret_start) * 1000.0
         retrieval_source_counts = {
-            source: sum(1 for candidate in candidates if source in candidate.source_scores)
+            source: sum(
+                1 for candidate in candidates if source in candidate.source_scores
+            )
             for source in ("svd", "popularity", "genre")
         }
 
@@ -280,11 +302,13 @@ class TwoStageRecommenderEngine:
 
         # Stage 3: MMR Diversity Reranking với rerank_pool_k đồng nhất (P0.2 fix)
         t_div_start = time.perf_counter()
-        final_recommendations: list[ScoredRecommendation] = self.diversity_reranker.rerank(
-            ranked_candidates,
-            k=k,
-            diversity_lambda_override=diversity_lambda,
-            rerank_pool_k=self.rerank_pool_k,
+        final_recommendations: list[ScoredRecommendation] = (
+            self.diversity_reranker.rerank(
+                ranked_candidates,
+                k=k,
+                diversity_lambda_override=diversity_lambda,
+                rerank_pool_k=self.rerank_pool_k,
+            )
         )
         diversity_ms = (time.perf_counter() - t_div_start) * 1000.0
         total_ms = (time.perf_counter() - t_start) * 1000.0
@@ -307,7 +331,7 @@ class TwoStageRecommenderEngine:
         enriched_items: list[dict[str, Any]] = []
         for rank_idx, rec in enumerate(final_recommendations):
             item_id = rec.item_id
-            genres = sorted(list(self.genres_map.get(item_id, set())))
+            genres = sorted(self.genres_map.get(item_id, set()))
             pop_cnt = int(self.popularity_counts.get(item_id, 0))
 
             pop_sc = rec.features.popularity_score if rec.features else 0.0

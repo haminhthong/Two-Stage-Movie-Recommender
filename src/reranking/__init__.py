@@ -6,6 +6,6 @@ from .diversity import DiversityReranker, ScoredRecommendation
 __all__ = [
     "DiversityReranker",
     "ScoredRecommendation",
-    "apply_seen_filter",
     "apply_popularity_calibrator",
+    "apply_seen_filter",
 ]

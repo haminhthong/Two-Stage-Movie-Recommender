@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 from ..retrieval.base import CandidateRetriever
-from .features import CandidateFeatureBuilder, N_FEATURES
+from .features import N_FEATURES, CandidateFeatureBuilder
 
 
 class RankDatasetBuilder:
@@ -85,7 +85,9 @@ class RankDatasetBuilder:
 
         for u_id in users:
             target_item = user_target_map[u_id]
-            candidates = retriever.retrieve(user_id=u_id, k=self.candidate_k, filter_seen=True)
+            candidates = retriever.retrieve(
+                user_id=u_id, k=self.candidate_k, filter_seen=True
+            )
             if not candidates:
                 continue
             users_with_candidates += 1
@@ -113,7 +115,11 @@ class RankDatasetBuilder:
                 X_rows.append(feat.to_feature_vector())
                 y_rows.append(1 if feat.item_id == target_item else 0)
 
-        X = np.vstack(X_rows).astype(np.float32) if X_rows else np.empty((0, N_FEATURES), dtype=np.float32)
+        X = (
+            np.vstack(X_rows).astype(np.float32)
+            if X_rows
+            else np.empty((0, N_FEATURES), dtype=np.float32)
+        )
         y = np.array(y_rows, dtype=np.int32)
         groups = np.array(group_counts, dtype=np.int32)
 
@@ -121,9 +127,7 @@ class RankDatasetBuilder:
             "rank_train_users": len(users),
             "users_with_candidates": users_with_candidates,
             "retrieved_target_users": retrieved_targets,
-            "target_retrieval_rate": (
-                retrieved_targets / len(users) if users else 0.0
-            ),
+            "target_retrieval_rate": (retrieved_targets / len(users) if users else 0.0),
             "query_groups": len(group_counts),
             "candidate_rows": len(y_rows),
         }

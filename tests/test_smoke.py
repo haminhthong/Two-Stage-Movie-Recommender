@@ -11,10 +11,11 @@ import numpy as np
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
+
 from scripts.download_data import _safe_extract
 from src.api import app
 from src.data import time_split
-from src.evaluate import dcg, intra_list_diversity
+from src.evaluation.metrics import dcg, intra_list_diversity
 from src.recommender import Recommender
 from src.train import build_positive_interaction_matrix
 
@@ -66,7 +67,14 @@ def test_time_split_positive_sequence() -> None:
         {
             "user_id": [1, 1, 1, 1, 2, 2],
             "item_id": [101, 102, 103, 104, 201, 202],
-            "rating": [5.0, 4.0, 1.0, 5.0, 4.0, 5.0],  # User 1 có 3 positive, User 2 có 2 positive
+            "rating": [
+                5.0,
+                4.0,
+                1.0,
+                5.0,
+                4.0,
+                5.0,
+            ],  # User 1 có 3 positive, User 2 có 2 positive
             "timestamp": [100, 200, 250, 300, 100, 200],
         }
     )
@@ -94,7 +102,6 @@ def test_time_split_positive_sequence() -> None:
     assert len(user_2_train) == 2
 
 
-
 def test_safe_extract_rejects_zip_slip(tmp_path: Path) -> None:
     """Kiểm tra cơ chế bảo mật ngăn chặn Zip Slip ném ngoại lệ ValueError."""
     payload = io.BytesIO()
@@ -116,7 +123,7 @@ def test_model_config_records_retrieval_contract() -> None:
         pytest.skip("Chưa có model artifact config.json để test.")
 
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    assert config["schema_version"] in {1, 2, 3, 4}
+    assert config["schema_version"] in {1, 2, 3, 4, 5}
     target_k = config.get("final_k", config.get("top_k", 10))
     assert config["candidate_k"] >= target_k
     assert config["embedding_dimension"] > 0

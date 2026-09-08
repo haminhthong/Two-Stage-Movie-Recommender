@@ -9,8 +9,8 @@ from .svd import SVDRetriever
 __all__ = [
     "Candidate",
     "CandidateRetriever",
-    "SVDRetriever",
-    "PopularityRetriever",
     "GenreRetriever",
     "MultiSourceRetriever",
+    "PopularityRetriever",
+    "SVDRetriever",
 ]

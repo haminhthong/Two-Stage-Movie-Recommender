@@ -19,9 +19,7 @@ def seen_items_before(
     as_of_timestamp: int,
 ) -> set[int]:
     """Lấy toàn bộ item user đã tương tác trước mốc request/target."""
-    history = df[
-        (df["user_id"] == user_id) & (df["timestamp"] < int(as_of_timestamp))
-    ]
+    history = df[(df["user_id"] == user_id) & (df["timestamp"] < int(as_of_timestamp))]
     return set(history["item_id"].astype(int).tolist())
 
 

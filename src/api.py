@@ -16,7 +16,6 @@ from pydantic import BaseModel, Field
 
 from .artifacts.loader import ArtifactValidationError
 from .recommender import Recommender
-from .utils import load_json
 
 app = FastAPI(
     title="Two-Stage Recommendation System API",
@@ -52,13 +51,16 @@ class RecommendationItemSchema(BaseModel):
     )
     interaction_count: int = Field(0, description="Tổng số lượt đánh giá/tương tác")
     scores: dict[str, float] | None = Field(
-        None, description="Bảng phân rã điểm số chi tiết (retrieval, popularity, ranking, diversity_penalty, final)"
+        None,
+        description="Bảng phân rã điểm số chi tiết (retrieval, popularity, ranking, diversity_penalty, final)",
     )
     explanation: str | None = Field(
         None, description="Lý do giải thích tại sao sản phẩm này được gợi ý"
     )
     rank: int | None = Field(None, description="Thứ hạng trong danh sách cuối")
-    reason_codes: list[str] = Field(default_factory=list, description="Mã lý do có bằng chứng")
+    reason_codes: list[str] = Field(
+        default_factory=list, description="Mã lý do có bằng chứng"
+    )
 
 
 class RecommendationResponseSchema(BaseModel):
@@ -83,7 +85,9 @@ class RecommendationResponseSchema(BaseModel):
     recommendations: list[RecommendationItemSchema] = Field(
         default_factory=list, description="Payload recommendation chuẩn hóa"
     )
-    pipeline: dict[str, int] | None = Field(None, description="Số lượng item qua từng tầng")
+    pipeline: dict[str, int] | None = Field(
+        None, description="Số lượng item qua từng tầng"
+    )
     request_id: str | None = None
 
 
@@ -100,10 +104,15 @@ class ColdStartResponseSchema(BaseModel):
     """Schema phản hồi kết quả gợi ý người dùng mới."""
 
     strategy: str = Field(
-        ..., description="Chiến lược cold-start ('cold_start_genre_aware' hoặc 'cold_start_popularity')"
+        ...,
+        description="Chiến lược cold-start ('cold_start_genre_aware' hoặc 'cold_start_popularity')",
     )
-    preferred_genres: list[str] = Field(default_factory=list, description="Thể loại đã lọc")
-    items: list[RecommendationItemSchema] = Field(..., description="Danh sách phim gợi ý")
+    preferred_genres: list[str] = Field(
+        default_factory=list, description="Thể loại đã lọc"
+    )
+    items: list[RecommendationItemSchema] = Field(
+        ..., description="Danh sách phim gợi ý"
+    )
     model_version: str = Field(..., description="Phiên bản mô hình")
 
 
@@ -146,7 +155,10 @@ def get_recommendation(
     user_id: Annotated[int, Path(ge=1, description="ID người dùng cần gợi ý")],
     k: int = Query(10, ge=1, le=50, description="Số lượng gợi ý tối đa (1-50)"),
     diversity: float = Query(
-        0.95, ge=0.0, le=1.0, description="Trọng số giữ độ liên quan trong MMR; càng cao càng ít hy sinh relevance"
+        0.95,
+        ge=0.0,
+        le=1.0,
+        description="Trọng số giữ độ liên quan trong MMR; càng cao càng ít hy sinh relevance",
     ),
     include_metadata: bool = Query(
         False, description="Đặt True để trả về chi tiết tên và thể loại phim"
@@ -158,7 +170,8 @@ def get_recommendation(
         False, description="Bật thông tin debug scores/latency; mặc định tắt"
     ),
     recent_items: str | None = Query(
-        None, description="Danh sách ID phim xem gần đây, phân tách bởi dấu phẩy (ví dụ: '1,2,3')"
+        None,
+        description="Danh sách ID phim xem gần đây, phân tách bởi dấu phẩy (ví dụ: '1,2,3')",
     ),
 ) -> dict[str, Any]:
     """Tạo danh sách gợi ý phim cá nhân hóa cho một người dùng cụ thể.
@@ -170,9 +183,7 @@ def get_recommendation(
     if recent_items:
         try:
             recent_item_ids = [
-                int(value.strip())
-                for value in recent_items.split(",")
-                if value.strip()
+                int(value.strip()) for value in recent_items.split(",") if value.strip()
             ]
         except ValueError as exc:
             raise HTTPException(
@@ -255,7 +266,7 @@ def cold_start_recommendation(
     """Gợi ý phim thông minh cho Người dùng mới (Cold Start) dựa trên thể loại yêu thích."""
     try:
         recommender = get_recommender()
-        item_ids, strategy, enriched = recommender._engine.cold_start_recommend(
+        _item_ids, strategy, enriched = recommender._engine.cold_start_recommend(
             preferred_genres=body.preferred_genres, k=body.k
         )
     except (ArtifactValidationError, OSError, ValueError, KeyError) as exc:

@@ -6,8 +6,8 @@ Mọi feature retrieval giữ semantics riêng của source. Không dùng một
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 import numpy as np
 import pandas as pd
@@ -121,7 +121,9 @@ class CandidateFeatureBuilder:
         interactions_df: pd.DataFrame | None = None,
         rating_threshold: float = 4.0,
     ) -> None:
-        self.popularity_scores = {int(key): float(value) for key, value in popularity_scores.items()}
+        self.popularity_scores = {
+            int(key): float(value) for key, value in popularity_scores.items()
+        }
         self.genre_map = genre_map or {}
         self.user_genre_profiles = user_genre_profiles or {}
         self.user_stats = user_stats or {}
@@ -130,13 +132,7 @@ class CandidateFeatureBuilder:
         self.rating_threshold = float(rating_threshold)
         self._snapshot_cache: dict[int, tuple[dict, dict, dict, dict]] = {}
 
-        values = np.asarray(sorted(self.popularity_scores.values()), dtype=np.float32)
-        self.pop_percentiles: dict[int, float] = {}
-        if values.size:
-            for item_id, score in self.popularity_scores.items():
-                self.pop_percentiles[item_id] = float(
-                    np.searchsorted(values, score, side="right") / values.size
-                )
+        self.pop_percentiles = _popularity_percentiles(self.popularity_scores)
         self.item_genre_counts = {
             int(item_id): max(1, len(genres))
             for item_id, genres in self.genre_map.items()
@@ -145,7 +141,12 @@ class CandidateFeatureBuilder:
     def _snapshot_statistics(
         self,
         as_of_timestamp: int | None,
-    ) -> tuple[dict[int, dict[str, float]], dict[int, dict[str, float]], dict[int, float], dict[int, dict[str, float]]]:
+    ) -> tuple[
+        dict[int, dict[str, float]],
+        dict[int, dict[str, float]],
+        dict[int, float],
+        dict[int, dict[str, float]],
+    ]:
         """Tạo user/item stats chỉ từ interaction có timestamp nhỏ hơn ``as_of``."""
         if as_of_timestamp is None or self.interactions_df is None:
             return (
@@ -174,7 +175,9 @@ class CandidateFeatureBuilder:
         item_stats: dict[int, dict[str, float]] = {}
         for item_id, group in history.groupby("item_id"):
             item_stats[int(item_id)] = {
-                "positive_count": float((group["rating"] >= self.rating_threshold).sum()),
+                "positive_count": float(
+                    (group["rating"] >= self.rating_threshold).sum()
+                ),
                 "rating_count": float(len(group)),
                 "avg_rating": float(group["rating"].mean()),
             }
@@ -245,6 +248,11 @@ class CandidateFeatureBuilder:
         user_stats, item_stats, popularity_scores, profiles = self._snapshot_statistics(
             as_of_timestamp
         )
+        pop_percentiles = (
+            self.pop_percentiles
+            if as_of_timestamp is None or self.interactions_df is None
+            else _popularity_percentiles(popularity_scores)
+        )
         svd_scores = np.asarray(
             [
                 float(candidate.source_scores.get("svd", 0.0))
@@ -255,7 +263,9 @@ class CandidateFeatureBuilder:
         user_profile = profiles.get(user_id, {}) if user_id is not None else {}
         user_stat = user_stats.get(user_id, {}) if user_id is not None else {}
         user_positive_count = float(user_stat.get("positive_count", 0.0))
-        user_interaction_count = float(user_stat.get("interaction_count", user_positive_count))
+        user_interaction_count = float(
+            user_stat.get("interaction_count", user_positive_count)
+        )
         user_avg_rating = float(user_stat.get("avg_rating", 3.8))
         genre_entropy = _genre_entropy(user_profile)
 
@@ -275,7 +285,9 @@ class CandidateFeatureBuilder:
                 if user_profile and item_genres
                 else 0.0
             )
-            overlap = sum(1 for genre in item_genres if user_profile.get(genre, 0.0) > 0)
+            overlap = sum(
+                1 for genre in item_genres if user_profile.get(genre, 0.0) > 0
+            )
             item_stat = item_stats.get(item_id, {})
             item_rating_count = float(item_stat.get("rating_count", 0.0))
             item_positive_count = float(item_stat.get("positive_count", 0.0))
@@ -298,7 +310,7 @@ class CandidateFeatureBuilder:
                 item_positive_count,
                 item_rating_count,
                 item_avg_rating,
-                float(self.pop_percentiles.get(item_id, 0.0)),
+                float(pop_percentiles.get(item_id, 0.0)),
                 float(self.item_genre_counts.get(item_id, max(1, len(item_genres)))),
                 affinity,
                 float(overlap),
@@ -369,3 +381,15 @@ def _genre_entropy(profile: dict[str, float]) -> float:
     values = np.asarray(list(profile.values()), dtype=np.float32)
     values = values[values > 0]
     return float(-(values * np.log(values)).sum()) if values.size else 0.0
+
+
+def _popularity_percentiles(scores: dict[int, float]) -> dict[int, float]:
+    """Tính percentile popularity trên đúng snapshot đang dùng cho sample."""
+    if not scores:
+        return {}
+
+    values = np.asarray(sorted(scores.values()), dtype=np.float32)
+    return {
+        int(item_id): float(np.searchsorted(values, score, side="right") / values.size)
+        for item_id, score in scores.items()
+    }

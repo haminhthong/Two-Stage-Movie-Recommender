@@ -16,12 +16,9 @@ Quy trình chuẩn công nghiệp (Production Recommender Pipeline):
 
 from __future__ import annotations
 
-import logging
-from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pandas as pd
 from sklearn.decomposition import TruncatedSVD
 
 from .artifacts.writer import save_versioned_bundle
@@ -36,6 +33,7 @@ from .data import (
     load_ratings,
     temporal_split_four_way,
 )
+from .evaluation.ranking_metrics import ranker_ndcg_at_k, ranker_recall_at_k
 from .ranking.dataset import RankDatasetBuilder
 from .ranking.features import CandidateFeatureBuilder
 from .ranking.scorer import RankedCandidate, TwoStageRanker
@@ -45,7 +43,6 @@ from .retrieval.genre import GenreRetriever
 from .retrieval.merger import MultiSourceRetriever
 from .retrieval.popularity import PopularityRetriever
 from .retrieval.svd import SVDRetriever
-from .evaluation.ranking_metrics import ranker_ndcg_at_k, ranker_recall_at_k
 from .utils import LOGGER, set_seed, setup_logging
 
 
@@ -54,16 +51,28 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
     cfg = config or TrainConfig()
     setup_logging()
     set_seed(cfg.seed)
-    LOGGER.info("=== Bắt đầu quy trình huấn luyện Two-Stage Recommender Pipeline (Version: %s) ===", cfg.model_version)
+    LOGGER.info(
+        "=== Bắt đầu quy trình huấn luyện Two-Stage Recommender Pipeline (Version: %s) ===",
+        cfg.model_version,
+    )
 
     # Step 1: Nạp dữ liệu & Sinh Data Manifest
     df_ratings = load_ratings()
     df_movies = load_movies()
     data_manifest = create_data_manifest(df_ratings=df_ratings)
-    LOGGER.info("Đã nạp MovieLens 1M: %d tương tác từ %d users và %d items.", len(df_ratings), data_manifest["unique_users"], data_manifest["unique_items"])
+    LOGGER.info(
+        "Đã nạp MovieLens 1M: %d tương tác từ %d users và %d items.",
+        len(df_ratings),
+        data_manifest["unique_users"],
+        data_manifest["unique_items"],
+    )
 
     # Step 2: 4-Way Temporal Split & Sinh Split Manifest
-    LOGGER.info("Thực hiện 4-Way Temporal Split (min_positive=%d, threshold=%.1f)...", cfg.min_positive, cfg.rating_threshold)
+    LOGGER.info(
+        "Thực hiện 4-Way Temporal Split (min_positive=%d, threshold=%.1f)...",
+        cfg.min_positive,
+        cfg.rating_threshold,
+    )
     retrieval_train_df, rank_train_df, val_df, test_df = temporal_split_four_way(
         df_ratings,
         rating_threshold=cfg.rating_threshold,
@@ -96,16 +105,28 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
     interaction_matrix = build_positive_interaction_matrix(
         retrieval_train_df, user_map, item_map, cfg.rating_threshold
     )
-    LOGGER.info("Kích thước ma trận tương tác: %s với %d tương tác tích cực.", interaction_matrix.shape, interaction_matrix.nnz)
+    LOGGER.info(
+        "Kích thước ma trận tương tác: %s với %d tương tác tích cực.",
+        interaction_matrix.shape,
+        interaction_matrix.nnz,
+    )
 
     svd = TruncatedSVD(n_components=cfg.embedding_dim, random_state=cfg.seed)
     user_embeddings = svd.fit_transform(interaction_matrix)
     item_embeddings = svd.components_.T
-    LOGGER.info("Trích xuất Embeddings thành công: User %s, Item %s.", user_embeddings.shape, item_embeddings.shape)
+    LOGGER.info(
+        "Trích xuất Embeddings thành công: User %s, Item %s.",
+        user_embeddings.shape,
+        item_embeddings.shape,
+    )
 
     # Tính toán Popularity Priors & Seen Filter
-    positive_retrieval = retrieval_train_df[retrieval_train_df.rating >= cfg.rating_threshold]
-    popularity_counts = positive_retrieval.groupby("item_id").size().sort_values(ascending=False)
+    positive_retrieval = retrieval_train_df[
+        retrieval_train_df.rating >= cfg.rating_threshold
+    ]
+    popularity_counts = (
+        positive_retrieval.groupby("item_id").size().sort_values(ascending=False)
+    )
     popular_items = [int(x) for x in popularity_counts.index.to_list()]
 
     max_count = max(popularity_counts.values, default=1)
@@ -129,7 +150,10 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
     user_genre_profiles = build_user_genre_profiles(
         retrieval_train_df, df_movies, rating_threshold=cfg.rating_threshold
     )
-    LOGGER.info("Đã xây dựng %d User Genre Profiles tuân thủ Implicit-Positive contract.", len(user_genre_profiles))
+    LOGGER.info(
+        "Đã xây dựng %d User Genre Profiles tuân thủ Implicit-Positive contract.",
+        len(user_genre_profiles),
+    )
 
     # Thống kê User và Item stats phục vụ feature engineering
     user_pos_counts = positive_retrieval.groupby("user_id").size().to_dict()
@@ -210,9 +234,11 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
         max_users=cfg.max_rank_train_users,
         seed=cfg.seed,
     )
-    LOGGER.info("Coverage target retrieval của rank-train: %.2f%%", 100.0 * float(
-        dataset_builder.last_build_stats.get("target_retrieval_rate", 0.0)
-    ))
+    LOGGER.info(
+        "Coverage target retrieval của rank-train: %.2f%%",
+        100.0
+        * float(dataset_builder.last_build_stats.get("target_retrieval_rate", 0.0)),
+    )
 
     # Step 5: Huấn luyện Stage-2 Learned Ranker
     learned_ranker = train_learned_ranker(
@@ -224,18 +250,25 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
     )
 
     # Step 6: Validation Tuning (với rerank_pool_k = 40 đồng nhất)
-    LOGGER.info("Bắt đầu điều chỉnh (tuning) siêu tham số trên Validation với rerank_pool_k = %d...", cfg.rerank_pool_k)
+    LOGGER.info(
+        "Bắt đầu điều chỉnh (tuning) siêu tham số trên Validation với rerank_pool_k = %d...",
+        cfg.rerank_pool_k,
+    )
     val_truth = dict(zip(val_df.user_id, val_df.item_id, strict=True))
     eligible_val_users = np.array([u for u in val_truth if u in user_map])
 
     rng = np.random.default_rng(cfg.seed)
     if len(eligible_val_users) > cfg.max_val_users:
-        sampled_val_users = rng.choice(eligible_val_users, size=cfg.max_val_users, replace=False)
+        sampled_val_users = rng.choice(
+            eligible_val_users, size=cfg.max_val_users, replace=False
+        )
     else:
         sampled_val_users = eligible_val_users
 
     # Chuẩn bị candidates cho tập Validation
-    val_alpha_precomputed: dict[int, tuple[int, np.ndarray, np.ndarray, np.ndarray]] = {}
+    val_alpha_precomputed: dict[
+        int, tuple[int, np.ndarray, np.ndarray, np.ndarray]
+    ] = {}
     val_learned_ranked: dict[int, tuple[int, list[RankedCandidate]]] = {}
     val_retrieval_ranked: dict[int, list[RankedCandidate]] = {}
     val_stage1_ndcgs: list[float] = []
@@ -271,7 +304,9 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
             user_id=u_id,
             as_of_timestamp=val_timestamp,
         )
-        val_matrix = np.vstack([feature.to_feature_vector() for feature in val_features])
+        val_matrix = np.vstack(
+            [feature.to_feature_vector() for feature in val_features]
+        )
         norm_sc = val_matrix[:, 0]
         pop_sc = val_matrix[:, 2]
         val_alpha_precomputed[u_id] = (true_item, cand_indices, norm_sc, pop_sc)
@@ -291,22 +326,35 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
         cand_ids = [candidate.item_id for candidate in cands]
         ranked_ids = [candidate.item_id for candidate in ranked]
         val_stage1_ndcgs.append(ranker_ndcg_at_k(cand_ids, true_item, k=cfg.final_k))
-        val_stage1_recalls.append(ranker_recall_at_k(cand_ids, true_item, k=cfg.final_k))
+        val_stage1_recalls.append(
+            ranker_recall_at_k(cand_ids, true_item, k=cfg.final_k)
+        )
         val_learned_ndcgs.append(ranker_ndcg_at_k(ranked_ids, true_item, k=cfg.final_k))
-        val_learned_recalls.append(ranker_recall_at_k(ranked_ids, true_item, k=cfg.final_k))
+        val_learned_recalls.append(
+            ranker_recall_at_k(ranked_ids, true_item, k=cfg.final_k)
+        )
 
     # Tuning alpha cho Baseline Heuristic Fusion (vectorized, chạy cực nhanh)
     alpha_recalls: dict[str, float] = {}
     for alpha in cfg.alpha_candidates:
         hits: list[float] = []
-        for u_id, (true_item, cand_indices, norm_sc, pop_sc) in val_alpha_precomputed.items():
+        for u_id, (
+            true_item,
+            cand_indices,
+            norm_sc,
+            pop_sc,
+        ) in val_alpha_precomputed.items():
             combined = alpha * norm_sc + (1.0 - alpha) * pop_sc
-            top_cand = cand_indices[np.argsort(-combined)[:cfg.final_k]]
+            top_cand = cand_indices[np.argsort(-combined)[: cfg.final_k]]
             hits.append(float(true_item in top_cand))
         alpha_recalls[f"{alpha:.2f}"] = float(np.mean(hits)) if hits else 0.0
 
     best_alpha = max(cfg.alpha_candidates, key=lambda a: alpha_recalls[f"{a:.2f}"])
-    LOGGER.info("Kết quả tuning alpha (Baseline Ranker) trên Validation: %s -> Chọn best_alpha = %.2f", alpha_recalls, best_alpha)
+    LOGGER.info(
+        "Kết quả tuning alpha (Baseline Ranker) trên Validation: %s -> Chọn best_alpha = %.2f",
+        alpha_recalls,
+        best_alpha,
+    )
 
     # Gate Stage 2: chỉ bật ranker nếu thắng retrieval order trên Dev.
     stage1_ndcg = float(np.mean(val_stage1_ndcgs)) if val_stage1_ndcgs else 0.0
@@ -382,7 +430,11 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
             best_ild = mean_ild
             best_lambda = div_lambda
 
-    LOGGER.info("Kết quả tuning diversity_lambda: %s -> Chọn best_diversity_lambda = %.2f", diversity_tuning_results, best_lambda)
+    LOGGER.info(
+        "Kết quả tuning diversity_lambda: %s -> Chọn best_diversity_lambda = %.2f",
+        diversity_tuning_results,
+        best_lambda,
+    )
 
     # Step 7: Đóng gói và lưu trữ Versioned Artifacts
     metadata_payload = {

@@ -9,7 +9,6 @@ Phân tích hiệu năng thời gian thực của:
 
 from __future__ import annotations
 
-from typing import Any
 import numpy as np
 
 from ..serving.recommender import TwoStageRecommenderEngine

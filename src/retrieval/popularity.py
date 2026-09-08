@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 from .base import Candidate, CandidateRetriever
 
@@ -50,7 +50,9 @@ class PopularityRetriever(CandidateRetriever):
         seen = (
             set(seen_items_override)
             if filter_seen and seen_items_override is not None
-            else self.seen_by_user.get(user_id, set()) if filter_seen else set()
+            else self.seen_by_user.get(user_id, set())
+            if filter_seen
+            else set()
         )
         candidates: list[Candidate] = []
 

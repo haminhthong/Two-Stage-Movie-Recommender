@@ -6,10 +6,14 @@ các import cũ không bị gãy.
 
 from __future__ import annotations
 
-from ..reranking.diversity import DiversityReranker, RankedCandidate, ScoredRecommendation
+from ..reranking.diversity import (
+    DiversityReranker,
+    RankedCandidate,
+    ScoredRecommendation,
+)
 
 __all__ = [
-    "ScoredRecommendation",
     "DiversityReranker",
     "RankedCandidate",
+    "ScoredRecommendation",
 ]

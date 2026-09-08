@@ -6,8 +6,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.evaluation.evaluator import FullFunnelEvaluator
 from src.ranking.dataset import RankDatasetBuilder
-from src.ranking.features import CandidateFeatureBuilder, N_FEATURES
+from src.ranking.features import N_FEATURES, CandidateFeatureBuilder
+from src.ranking.scorer import TwoStageRanker
+from src.reranking.diversity import DiversityReranker
 from src.retrieval.base import Candidate, CandidateRetriever
 from src.retrieval.merger import MultiSourceRetriever
 from src.retrieval.svd import SVDRetriever
@@ -92,3 +95,89 @@ def test_seen_override_is_request_local() -> None:
 
     assert [candidate.item_id for candidate in result] == [30]
     assert retriever.seen_by_user[1] == {10}
+
+
+def test_point_in_time_percentile_uses_current_snapshot() -> None:
+    """Popularity percentile không được lấy từ dữ liệu sau mốc as_of."""
+    interactions = pd.DataFrame(
+        {
+            "user_id": [1, 1],
+            "item_id": [1, 2],
+            "rating": [5.0, 5.0],
+            "timestamp": [10, 20],
+        }
+    )
+    builder = CandidateFeatureBuilder(
+        popularity_scores={1: 1.0, 2: 0.5},
+        interactions_df=interactions,
+    )
+    candidate = Candidate(
+        item_id=2,
+        source_scores={"svd": 0.2},
+        svd_score=0.2,
+        svd_rank=1,
+    )
+
+    feature = builder.build_features([candidate], user_id=1, as_of_timestamp=15)[0]
+
+    assert feature.item_popularity_percentile == 0.0
+
+
+def test_evaluator_uses_retrieval_order_when_ranker_is_disabled() -> None:
+    """Offline evaluator phải khớp fallback retrieval-order của serving."""
+
+    class StaticRetriever(CandidateRetriever):
+        def __init__(self) -> None:
+            self.user_map = {1: 0}
+
+        def retrieve(
+            self,
+            user_id: int,
+            k: int = 200,
+            filter_seen: bool = True,
+            seen_items_override=None,
+        ) -> list[Candidate]:
+            return [
+                Candidate(
+                    item_id=1,
+                    source_scores={"svd": 0.1, "popularity": 1.0},
+                    svd_score=0.1,
+                    popularity_score=1.0,
+                ),
+                Candidate(
+                    item_id=2,
+                    source_scores={"svd": 1.0, "popularity": 0.1},
+                    svd_score=1.0,
+                    popularity_score=0.1,
+                ),
+            ][:k]
+
+    class Engine:
+        def __init__(self) -> None:
+            self.config = {"candidate_k": 2}
+            self.user_map = {1: 0}
+            self.seen_by_user = {1: set()}
+            self.retriever = StaticRetriever()
+            self.feature_builder = CandidateFeatureBuilder(
+                popularity_scores={1: 1.0, 2: 0.1},
+                genre_map={1: {"Action"}, 2: {"Drama"}},
+            )
+            self.ranker_enabled = False
+            self.ranker = TwoStageRanker(latent_weight=0.9)
+            self.diversity_reranker = DiversityReranker(
+                genre_map=self.feature_builder.genre_map,
+                default_lambda=1.0,
+                default_rerank_pool_k=2,
+            )
+
+    engine = Engine()
+    evaluator = FullFunnelEvaluator(
+        engine=engine,
+        catalog_items=[1, 2],
+        popular_items=[2, 1],
+        popularity_counts={1: 1, 2: 1},
+        genre_map=engine.feature_builder.genre_map,
+    )
+    result = evaluator.evaluate(test_truth={1: 1}, k=1)
+
+    assert result["funnel_stage_metrics"]["stage_3_final_post_mmr"]["recall@1"] == 1.0

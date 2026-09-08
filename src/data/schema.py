@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
 
 @dataclass(frozen=True)
@@ -59,7 +59,7 @@ class RecommendationContext:
         positive_item_ids: Iterable[int] = (),
         recent_item_ids: Iterable[int] = (),
         as_of_timestamp: int | None = None,
-    ) -> "RecommendationContext":
+    ) -> RecommendationContext:
         """Tạo context và chuẩn hóa ID về int/frozen set."""
         return cls(
             user_id=int(user_id),
@@ -67,9 +67,7 @@ class RecommendationContext:
                 int(as_of_timestamp) if as_of_timestamp is not None else None
             ),
             seen_item_ids=frozenset(int(item_id) for item_id in seen_item_ids),
-            positive_item_ids=frozenset(
-                int(item_id) for item_id in positive_item_ids
-            ),
+            positive_item_ids=frozenset(int(item_id) for item_id in positive_item_ids),
             recent_item_ids=frozenset(int(item_id) for item_id in recent_item_ids),
         )
 

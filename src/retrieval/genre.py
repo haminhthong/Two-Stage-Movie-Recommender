@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 from .base import Candidate, CandidateRetriever
 
@@ -48,7 +48,9 @@ class GenreRetriever(CandidateRetriever):
         seen = (
             set(seen_items_override)
             if filter_seen and seen_items_override is not None
-            else self.seen_by_user.get(user_id, set()) if filter_seen else set()
+            else self.seen_by_user.get(user_id, set())
+            if filter_seen
+            else set()
         )
 
         if not user_profile:
@@ -88,7 +90,9 @@ class GenreRetriever(CandidateRetriever):
             item_genres = self.genre_map.get(item_id, set())
             overlap = len(item_genres & top_genres)
             if overlap > 0:
-                affinity = sum(user_profile.get(g, 0.0) for g in item_genres) / max(1, len(item_genres))
+                affinity = sum(user_profile.get(g, 0.0) for g in item_genres) / max(
+                    1, len(item_genres)
+                )
                 pop_sc = self.popularity_scores.get(item_id, 0.0)
                 genre_score = float(0.6 * affinity + 0.4 * pop_sc)
                 candidates.append(

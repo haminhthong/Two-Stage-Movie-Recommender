@@ -13,7 +13,6 @@ Cung cấp:
 
 from __future__ import annotations
 
-from pathlib import Path
 import time
 from typing import Any
 
@@ -23,13 +22,8 @@ from .data import load_ratings, seen_items_before, temporal_split_four_way
 from .evaluation.evaluator import FullFunnelEvaluator
 from .evaluation.latency import summarize_latencies
 from .evaluation.metrics import (
-    compute_long_tail_distribution,
-    compute_user_coverage,
-    dcg,
     hit_rate_at_k,
     intra_list_diversity,
-    mrr_at_k,
-    novelty_at_k,
 )
 from .ranking.scorer import RankedCandidate, TwoStageRanker
 from .recommender import Recommender
@@ -44,7 +38,10 @@ def evaluate_recommender(
 ) -> dict[str, Any]:
     """Đánh giá toàn diện hệ thống gợi ý trên tập Test (Official Funnel Evaluation)."""
     setup_logging()
-    LOGGER.info("Bắt đầu đánh giá mô hình offline theo phễu từng tầng trên tập Test với Top-K = %d...", k)
+    LOGGER.info(
+        "Bắt đầu đánh giá mô hình offline theo phễu từng tầng trên tập Test với Top-K = %d...",
+        k,
+    )
 
     df_ratings = load_ratings()
     _, _, _, test_df = temporal_split_four_way(df_ratings)
@@ -106,7 +103,10 @@ def run_ablation_study(
 ) -> dict[str, Any]:
     """Chọn baseline/ranker/diversity trên Development, tuyệt đối không dùng Test."""
     setup_logging()
-    LOGGER.info("Bắt đầu chạy Ablation Study & MMR Candidate Pool Benchmark trên %d người dùng...", max_users)
+    LOGGER.info(
+        "Bắt đầu chạy Ablation Study & MMR Candidate Pool Benchmark trên %d người dùng...",
+        max_users,
+    )
 
     df_ratings = load_ratings()
     _, _, val_df, _ = temporal_split_four_way(df_ratings)
@@ -123,15 +123,16 @@ def run_ablation_study(
         eligible_users = list(rng.choice(eligible_users, size=max_users, replace=False))
 
     # Pre-extract candidates và features cho 1000 users 1 lần duy nhất
-    LOGGER.info("Tiền trích xuất candidates & features cho %d ablation users...", len(eligible_users))
+    LOGGER.info(
+        "Tiền trích xuất candidates & features cho %d ablation users...",
+        len(eligible_users),
+    )
     user_data: dict[int, dict[str, Any]] = {}
     cand_k = engine.config.get("candidate_k", 200)
 
     for u_id in eligible_users:
         target_item = dev_truth[u_id]
-        dev_timestamp = int(
-            val_df.loc[val_df["user_id"] == u_id, "timestamp"].iloc[0]
-        )
+        dev_timestamp = int(val_df.loc[val_df["user_id"] == u_id, "timestamp"].iloc[0])
         seen = seen_items_before(df_ratings, u_id, dev_timestamp)
         cands = engine.retriever.retrieve(
             u_id,
@@ -199,7 +200,9 @@ def run_ablation_study(
                     filter_seen=True,
                     seen_items_override=d["seen"],
                 )
-                svd_feats = engine.feature_builder.build_features(svd_candidates, user_id=u_id)
+                svd_feats = engine.feature_builder.build_features(
+                    svd_candidates, user_id=u_id
+                )
                 ranked = TwoStageRanker(latent_weight=1.0).rank(svd_feats)
                 preds = [r.item_id for r in ranked[:k]]
             elif v_type == "retrieval":
@@ -236,6 +239,7 @@ def run_ablation_study(
 
 def main() -> None:
     import sys
+
     evaluate_recommender()
     run_ablation_study()
     sys.exit(0)

@@ -64,7 +64,8 @@ def validate_release_bundle(
                 raise ArtifactValidationError("Legacy release thiếu artifact bắt buộc.")
             return {
                 "manifest_version": 0,
-                "model_version": expected_version or str(config.get("version", "legacy")),
+                "model_version": expected_version
+                or str(config.get("version", "legacy")),
                 "legacy": True,
             }
         raise ArtifactValidationError("Release schema 5 thiếu manifest.json.")
@@ -79,11 +80,15 @@ def validate_release_bundle(
         release.name,
         config_version,
     }:
-        raise ArtifactValidationError("model_version trong manifest không khớp release.")
+        raise ArtifactValidationError(
+            "model_version trong manifest không khớp release."
+        )
     if manifest.get("feature_schema_version") != config.get(
         "feature_schema_version", manifest.get("feature_schema_version")
     ):
-        raise ArtifactValidationError("Feature schema trong config/manifest không khớp.")
+        raise ArtifactValidationError(
+            "Feature schema trong config/manifest không khớp."
+        )
 
     required = {
         "retrieval/user_emb.npy",
@@ -101,17 +106,22 @@ def validate_release_bundle(
     for relative_path in required:
         path = release / relative_path
         if not path.is_file():
-            raise ArtifactValidationError(f"Release thiếu artifact bắt buộc: {relative_path}")
+            raise ArtifactValidationError(
+                f"Release thiếu artifact bắt buộc: {relative_path}"
+            )
         expected_hash = hashes.get(relative_path)
         if not expected_hash or _sha256(path) != expected_hash:
             raise ArtifactValidationError(f"Hash artifact không khớp: {relative_path}")
 
     ranker_path = release / "ranking" / "ranker.joblib"
     ranker_enabled = bool(config.get("ranker_enabled", False))
-    if ranker_enabled:
-        if not ranker_path.is_file() or not hashes.get("ranking/ranker.joblib"):
-            raise ArtifactValidationError("config bật ranker nhưng bundle thiếu ranker.")
-    if ranker_path.is_file() and hashes.get("ranking/ranker.joblib") != _sha256(ranker_path):
+    if ranker_enabled and (
+        not ranker_path.is_file() or not hashes.get("ranking/ranker.joblib")
+    ):
+        raise ArtifactValidationError("config bật ranker nhưng bundle thiếu ranker.")
+    if ranker_path.is_file() and hashes.get("ranking/ranker.joblib") != _sha256(
+        ranker_path
+    ):
         raise ArtifactValidationError("Hash ranker không khớp manifest.")
 
     return manifest
@@ -145,12 +155,16 @@ def load_production_bundle(model_dir: str | Path = "models") -> dict[str, Any]:
     # Không load artifact ranker khi release đã tắt ranker qua quality gate.
     # Điều này cũng cho phép service đọc legacy bundle mà không cài xgboost;
     # file thừa không được coi là active model.
-    ranker = joblib.load(ranker_path) if ranker_path.is_file() and bool(
-        config.get("ranker_enabled", False)
-    ) else None
+    ranker = (
+        joblib.load(ranker_path)
+        if ranker_path.is_file() and bool(config.get("ranker_enabled", False))
+        else None
+    )
 
     if not isinstance(metadata, dict) or not isinstance(config, dict):
-        raise ArtifactValidationError("Metadata/config của release không phải dictionary.")
+        raise ArtifactValidationError(
+            "Metadata/config của release không phải dictionary."
+        )
     return {
         "user_embeddings": user_emb,
         "item_embeddings": item_emb,

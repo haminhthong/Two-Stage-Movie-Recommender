@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
+
 import numpy as np
 
-from .features import CandidateFeatures, N_FEATURES
+from .features import N_FEATURES, CandidateFeatures
 
 
 class BaseRankModel(ABC):
     """Lớp cơ sở trừu tượng cho các mô hình tính điểm xếp hạng."""
 
     @abstractmethod
-    def predict_scores(self, features: Sequence[CandidateFeatures] | np.ndarray) -> np.ndarray:
+    def predict_scores(
+        self, features: Sequence[CandidateFeatures] | np.ndarray
+    ) -> np.ndarray:
         """Dự đoán điểm số mức độ phù hợp (Relevance Scores) cho danh sách đặc trưng ứng viên."""
         raise NotImplementedError
 
@@ -29,7 +33,9 @@ class WeightedFusionRanker(BaseRankModel):
         self.latent_weight = float(latent_weight)
         self.genre_affinity_weight = float(genre_affinity_weight)
 
-    def predict_scores(self, features: Sequence[CandidateFeatures] | np.ndarray) -> np.ndarray:
+    def predict_scores(
+        self, features: Sequence[CandidateFeatures] | np.ndarray
+    ) -> np.ndarray:
         if len(features) == 0:
             return np.array([], dtype=np.float32)
 
@@ -41,14 +47,24 @@ class WeightedFusionRanker(BaseRankModel):
             if features.shape[1] == N_FEATURES:
                 # Feature contract mới: SVD đã normalize trong pool, popularity
                 # và genre giữ score riêng theo source.
-                scores = alpha * features[:, 0] + pop_w * features[:, 2] + beta * features[:, 17]
+                scores = (
+                    alpha * features[:, 0]
+                    + pop_w * features[:, 2]
+                    + beta * features[:, 17]
+                )
             else:
                 # Tương thích vector 15 cột của artifact cũ, không dùng cho train mới.
-                scores = alpha * features[:, 1] + pop_w * features[:, 3] + beta * features[:, 4]
+                scores = (
+                    alpha * features[:, 1]
+                    + pop_w * features[:, 3]
+                    + beta * features[:, 4]
+                )
             return scores.astype(np.float32)
 
         scores = [
-            alpha * f.latent_score + pop_w * f.popularity_score + beta * f.genre_affinity
+            alpha * f.latent_score
+            + pop_w * f.popularity_score
+            + beta * f.genre_affinity
             for f in features
         ]
         return np.array(scores, dtype=np.float32)
@@ -65,7 +81,9 @@ class LearnedRanker(BaseRankModel):
         self.estimator = estimator
         self.model_type = model_type
 
-    def predict_scores(self, features: Sequence[CandidateFeatures] | np.ndarray) -> np.ndarray:
+    def predict_scores(
+        self, features: Sequence[CandidateFeatures] | np.ndarray
+    ) -> np.ndarray:
         if len(features) == 0:
             return np.array([], dtype=np.float32)
 

@@ -5,8 +5,8 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import platform
-from pathlib import Path
 import subprocess
+from pathlib import Path
 from typing import Any
 
 import joblib
@@ -25,7 +25,14 @@ def _sha256(path: Path) -> str:
 
 def _git_commit(root_path: Path) -> str:
     """Lấy commit hiện tại; bundle vẫn ghi được khi thư mục không phải Git repo."""
-    git_root = next((parent for parent in (root_path, *root_path.parents) if (parent / ".git").exists()), root_path)
+    git_root = next(
+        (
+            parent
+            for parent in (root_path, *root_path.parents)
+            if (parent / ".git").exists()
+        ),
+        root_path,
+    )
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -59,7 +66,17 @@ def save_versioned_bundle(
     luôn truyền ``publish=False`` và promotion nằm ở bước riêng.
     """
     root_path = Path(base_dir)
-    version_dir = root_path / version
+    root_resolved = root_path.resolve()
+    version_dir = (root_path / version).resolve()
+    try:
+        version_dir.relative_to(root_resolved)
+    except ValueError as exc:
+        raise ValueError("version phải nằm bên trong thư mục model.") from exc
+    if version_dir == root_resolved:
+        raise ValueError("version phải trỏ tới một release cụ thể.")
+    if version_dir.exists() and any(version_dir.iterdir()):
+        raise FileExistsError(f"Release đã tồn tại và không được ghi đè: {version_dir}")
+
     retrieval_dir = version_dir / "retrieval"
     ranking_dir = version_dir / "ranking"
     metadata_dir = version_dir / "metadata"

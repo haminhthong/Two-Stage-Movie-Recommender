@@ -12,14 +12,12 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
 from fastapi.testclient import TestClient
 
 from src.api import app
 from src.data import time_split
 from src.ranking.diversity import DiversityReranker, RankedCandidate
 from src.ranking.features import CandidateFeatureBuilder, CandidateFeatures
-from src.ranking.scorer import TwoStageRanker
 from src.recommender import Recommender
 from src.retrieval.base import Candidate
 from src.retrieval.svd import SVDRetriever
@@ -35,7 +33,7 @@ def test_temporal_split_no_future_leakage() -> None:
             "timestamp": [1000, 2000, 3000, 4000, 500, 600, 700],
         }
     )
-    train_df, val_df, test_df = time_split(df, rating_threshold=4.0, min_positive=3)
+    train_df, _val_df, _test_df = time_split(df, rating_threshold=4.0, min_positive=3)
 
     # User 1: positive tại 1000, 2000, 3000, 4000.
     # test = item 40 (ts=4000), val = item 30 (ts=3000).
@@ -55,7 +53,7 @@ def test_test_item_not_in_training() -> None:
             "timestamp": [100, 200, 300],
         }
     )
-    train_df, val_df, test_df = time_split(df, rating_threshold=4.0, min_positive=3)
+    train_df, _val_df, test_df = time_split(df, rating_threshold=4.0, min_positive=3)
 
     test_item = test_df.iloc[0]["item_id"]
     train_items = set(train_df[train_df["user_id"] == 1]["item_id"])
@@ -66,7 +64,9 @@ def test_seen_items_never_recommended() -> None:
     """Kiểm tra cơ chế Seen Filter đảm bảo item đã xuất hiện trong train không bao giờ được gợi ý lại."""
     # Giả lập retriever với 3 items: 1, 2, 3. Item 1 và 2 đã xem.
     user_emb = np.array([[1.0, 0.0]])
-    item_emb = np.array([[1.0, 0.0], [0.9, 0.0], [0.1, 0.0]])  # Item 1 cao nhất, item 3 thấp nhất
+    item_emb = np.array(
+        [[1.0, 0.0], [0.9, 0.0], [0.1, 0.0]]
+    )  # Item 1 cao nhất, item 3 thấp nhất
     items = np.array([1, 2, 3])
     user_map = {100: 0}
     item_map = {1: 0, 2: 1, 3: 2}
@@ -127,9 +127,15 @@ def test_diversity_lambda_zero_equals_base_rank() -> None:
     reranker = DiversityReranker(genre_map=genre_map, default_lambda=0.0)
 
     cands = [
-        RankedCandidate(item_id=1, relevance_score=0.95, features=CandidateFeatures(1, 0.95, 0.8)),
-        RankedCandidate(item_id=2, relevance_score=0.90, features=CandidateFeatures(2, 0.90, 0.7)),
-        RankedCandidate(item_id=3, relevance_score=0.70, features=CandidateFeatures(3, 0.70, 0.5)),
+        RankedCandidate(
+            item_id=1, relevance_score=0.95, features=CandidateFeatures(1, 0.95, 0.8)
+        ),
+        RankedCandidate(
+            item_id=2, relevance_score=0.90, features=CandidateFeatures(2, 0.90, 0.7)
+        ),
+        RankedCandidate(
+            item_id=3, relevance_score=0.70, features=CandidateFeatures(3, 0.70, 0.5)
+        ),
     ]
     reranked = reranker.rerank(cands, k=3, diversity_lambda_override=0.0)
     assert [r.item_id for r in reranked] == [1, 2, 3]
@@ -144,9 +150,15 @@ def test_high_diversity_reduces_genre_similarity() -> None:
     # Với lambda=0.5, penalty cho item 2 sau khi chọn item 1 là 0.5 * 1.0 = 0.5 -> score giảm xuống 0.39.
     # Trong khi item 3 có Jaccard=0.0 -> score giữ nguyên 0.85. Item 3 phải vượt lên trước item 2!
     cands = [
-        RankedCandidate(item_id=1, relevance_score=0.90, features=CandidateFeatures(1, 0.90, 0.8)),
-        RankedCandidate(item_id=2, relevance_score=0.89, features=CandidateFeatures(2, 0.89, 0.8)),
-        RankedCandidate(item_id=3, relevance_score=0.85, features=CandidateFeatures(3, 0.85, 0.7)),
+        RankedCandidate(
+            item_id=1, relevance_score=0.90, features=CandidateFeatures(1, 0.90, 0.8)
+        ),
+        RankedCandidate(
+            item_id=2, relevance_score=0.89, features=CandidateFeatures(2, 0.89, 0.8)
+        ),
+        RankedCandidate(
+            item_id=3, relevance_score=0.85, features=CandidateFeatures(3, 0.85, 0.7)
+        ),
     ]
     reranked = reranker.rerank(cands, k=3, diversity_lambda_override=0.5)
     result_ids = [r.item_id for r in reranked]
@@ -197,7 +209,10 @@ def test_user_genre_affinity_score() -> None:
         genre_map=genre_map,
         user_genre_profiles=user_profiles,
     )
-    cands = [Candidate(item_id=10, retrieval_score=1.0), Candidate(item_id=20, retrieval_score=1.0)]
+    cands = [
+        Candidate(item_id=10, retrieval_score=1.0),
+        Candidate(item_id=20, retrieval_score=1.0),
+    ]
     features = builder.build_features(cands, user_id=1)
 
     # Item 10 có 2 genres, overlap sum = 0.7 + 0.3 = 1.0, mean = 0.5

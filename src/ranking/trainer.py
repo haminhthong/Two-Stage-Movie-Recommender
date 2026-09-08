@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+
 import numpy as np
 
 from .model import LearnedRanker
@@ -64,10 +64,15 @@ def train_learned_ranker(
                 n_jobs=-1,
             )
             estimator.fit(X, y, group=groups)
-            LOGGER.info("Đã hoàn thành huấn luyện XGBRanker rank:ndcg trên %d query groups.", len(groups))
+            LOGGER.info(
+                "Đã hoàn thành huấn luyện XGBRanker rank:ndcg trên %d query groups.",
+                len(groups),
+            )
             return LearnedRanker(estimator=estimator, model_type="xgb_ranker")
         except ImportError:
-            LOGGER.warning("Không có xgboost; fallback LogisticRegression chỉ là pointwise.")
+            LOGGER.warning(
+                "Không có xgboost; dùng LogisticRegression làm fallback classifier."
+            )
             model_type = "logistic_regression"
 
     if model_type == "logistic_regression":
@@ -77,7 +82,9 @@ def train_learned_ranker(
 
         estimator = make_pipeline(
             StandardScaler(),
-            LogisticRegression(max_iter=1000, random_state=seed, class_weight="balanced"),
+            LogisticRegression(
+                max_iter=1000, random_state=seed, class_weight="balanced"
+            ),
         )
         estimator.fit(X, y)
         LOGGER.info("Đã hoàn thành huấn luyện Logistic Regression Ranker.")

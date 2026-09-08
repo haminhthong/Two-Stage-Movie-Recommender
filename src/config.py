@@ -18,14 +18,13 @@ class TrainConfig:
     embedding_dim: int = 64
 
     # Cấu hình kích thước ứng viên qua từng chặng (Uniform Pipeline Protocol)
-    candidate_k: int = 200     # Stage 1: Candidate Pool size
-    ranking_k: int = 200       # Deprecated: ranker chấm điểm toàn bộ candidate pool
-    rerank_pool_k: int = 40    # Stage 3: MMR Diversity candidate pool size (đồng nhất Train, Val, Test, Serving)
-    final_k: int = 10          # Final Recommendations top-K
+    candidate_k: int = 200  # Stage 1: Candidate Pool size
+    rerank_pool_k: int = 40  # Stage 3: MMR Diversity candidate pool size (đồng nhất Train, Val, Test, Serving)
+    final_k: int = 10  # Final Recommendations top-K
 
     # Hợp đồng dữ liệu tương tác tích cực ngầm định (Implicit-Positive Contract)
     rating_threshold: float = 4.0
-    min_positive: int = 4      # Tối thiểu 4 positive ratings cho 4-Way Temporal Split (Retrieval, Rank-Train, Val, Test)
+    min_positive: int = 4  # Tối thiểu 4 positive ratings cho 4-Way Temporal Split (Retrieval, Rank-Train, Val, Test)
 
     # Multi-source candidate counts
     svd_candidate_k: int = 150
@@ -66,13 +65,14 @@ class TrainConfig:
 class RankingConfig:
     """Cấu hình cho Tầng 2: Feature scoring, learned ranker và MMR diversity reranking."""
 
-    ranker_type: str = "xgb_ranker"  # "xgb_ranker", "logistic_regression", "weighted_fusion"
+    ranker_type: str = (
+        "xgb_ranker"  # "xgb_ranker", "logistic_regression", "weighted_fusion"
+    )
     latent_weight: float = 0.9
     genre_affinity_weight: float = 0.15
     diversity_lambda: float = 0.95
     popularity_scale: str = "log1p"  # 'log1p' hoặc 'linear'
     candidate_k: int = 200
-    ranking_k: int = 200
     rerank_pool_k: int = 40
     final_k: int = 10
 
@@ -84,7 +84,6 @@ class ServingConfig:
     model_dir: str | Path = "models"
     model_version: str = "v5-multisource-ranker"
     candidate_k: int = 200
-    ranking_k: int = 50
     rerank_pool_k: int = 40
     default_top_k: int = 10
     max_top_k: int = 50

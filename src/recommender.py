@@ -102,7 +102,9 @@ class Recommender:
             )
 
         # Hỗ trợ mock instance trong unit test
-        recommended_item_ids = self.recommend(user_id=user_id, k=k, diversity_lambda=diversity_lambda)
+        recommended_item_ids = self.recommend(
+            user_id=user_id, k=k, diversity_lambda=diversity_lambda
+        )
         titles: dict[int, str] = self.metadata.get("titles", {})
         genres: dict[int, set[str]] = self.metadata.get("genres", {})
         popularity_counts: dict[int, int] = self.metadata.get("popularity_counts", {})
@@ -111,7 +113,7 @@ class Recommender:
             {
                 "item_id": item_id,
                 "title": titles.get(item_id, f"Movie {item_id}"),
-                "genres": sorted(list(genres.get(item_id, set()))),
+                "genres": sorted(genres.get(item_id, set())),
                 "interaction_count": int(popularity_counts.get(item_id, 0)),
             }
             for item_id in recommended_item_ids
@@ -122,7 +124,9 @@ class Recommender:
     ) -> list[dict[str, Any]]:
         """Gợi ý thông minh cho Người dùng mới (Cold-Start User) dựa trên sở thích thể loại."""
         if hasattr(self, "_engine"):
-            return self._engine.cold_start_recommend(preferred_genres=preferred_genres, k=k)[2]
+            return self._engine.cold_start_recommend(
+                preferred_genres=preferred_genres, k=k
+            )[2]
 
         # Hỗ trợ mock instance trong unit test
         policy = ColdStartPolicy(

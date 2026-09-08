@@ -5,9 +5,9 @@ Stage 1 Candidate Retriever sử dụng tích vô hướng trên không gian vec
 
 from __future__ import annotations
 
-import numpy as np
+from collections.abc import Iterable
 
-from typing import Iterable
+import numpy as np
 
 from .base import Candidate, CandidateRetriever
 

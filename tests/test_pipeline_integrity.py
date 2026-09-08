@@ -13,25 +13,25 @@ Kiểm tra nghiêm ngặt:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from src.artifacts.loader import load_production_bundle
 from src.artifacts.writer import save_versioned_bundle
-from src.config import TrainConfig
-from src.data.interactions import build_positive_interaction_matrix, build_user_genre_profiles, extract_seen_items
-from src.data.split import temporal_split_four_way, time_split
-from src.evaluation.evaluator import FullFunnelEvaluator
-from src.evaluation.ranking_metrics import ranker_ndcg_at_k, ranker_recall_at_k
-from src.evaluation.retrieval_metrics import candidate_recall_at_k, target_in_catalog_rate
-from src.ranking.features import CandidateFeatureBuilder, CandidateFeatures
-from src.ranking.model import LearnedRanker, WeightedFusionRanker
-from src.ranking.scorer import TwoStageRanker
+from src.data.interactions import (
+    build_user_genre_profiles,
+    extract_seen_items,
+)
+from src.data.split import temporal_split_four_way
+from src.evaluation.retrieval_metrics import (
+    candidate_recall_at_k,
+    target_in_catalog_rate,
+)
+from src.ranking.features import CandidateFeatures
 from src.ranking.trainer import train_learned_ranker
-from src.recommender import Recommender
 from src.reranking.diversity import DiversityReranker
 from src.retrieval.base import Candidate
 from src.retrieval.merger import MultiSourceRetriever
@@ -49,7 +49,9 @@ def test_no_validation_item_in_user_history() -> None:
             "timestamp": [100, 200, 300, 400, 500],
         }
     )
-    ret_train, rank_train, val_df, test_df = temporal_split_four_way(data, min_positive=4)
+    ret_train, _rank_train, val_df, _test_df = temporal_split_four_way(
+        data, min_positive=4
+    )
 
     val_item = val_df.iloc[0]["item_id"]
     ret_items = set(ret_train[ret_train["user_id"] == 1]["item_id"])
@@ -66,7 +68,9 @@ def test_no_test_item_in_user_history() -> None:
             "timestamp": [100, 200, 300, 400, 500],
         }
     )
-    ret_train, rank_train, val_df, test_df = temporal_split_four_way(data, min_positive=4)
+    ret_train, rank_train, _val_df, test_df = temporal_split_four_way(
+        data, min_positive=4
+    )
 
     test_item = test_df.iloc[0]["item_id"]
     ret_items = set(ret_train[ret_train["user_id"] == 1]["item_id"])
@@ -119,7 +123,10 @@ def test_all_seen_items_filtered() -> None:
 
 def test_candidate_recall_computed_before_ranking() -> None:
     """P0.3: Candidate recall phải đo lường năng lực của candidate pool trước khi ranker can thiệp."""
-    cands = [Candidate(item_id=1, retrieval_score=0.9), Candidate(item_id=2, retrieval_score=0.8)]
+    cands = [
+        Candidate(item_id=1, retrieval_score=0.9),
+        Candidate(item_id=2, retrieval_score=0.8),
+    ]
     assert candidate_recall_at_k(cands, target_item=2, k=2) == 1.0
     assert candidate_recall_at_k(cands, target_item=2, k=1) == 0.0
     assert candidate_recall_at_k(cands, target_item=999, k=2) == 0.0
@@ -144,7 +151,9 @@ def test_rank_training_candidates_use_only_past_history() -> None:
             "timestamp": [10, 20, 30, 40, 50],
         }
     )
-    ret_train, rank_train, val_df, test_df = temporal_split_four_way(df, min_positive=4)
+    ret_train, rank_train, _val_df, _test_df = temporal_split_four_way(
+        df, min_positive=4
+    )
 
     rank_ts = rank_train.iloc[0]["timestamp"]
     ret_ts = ret_train[ret_train["user_id"] == 1]["timestamp"]
@@ -161,7 +170,9 @@ def test_validation_never_used_to_fit_ranker() -> None:
             "timestamp": [100, 200, 300, 400],
         }
     )
-    ret_train, rank_train, val_df, test_df = temporal_split_four_way(df, min_positive=4)
+    _ret_train, rank_train, val_df, test_df = temporal_split_four_way(
+        df, min_positive=4
+    )
 
     t_rank = rank_train.iloc[0]["timestamp"]
     t_val = val_df.iloc[0]["timestamp"]
@@ -196,7 +207,15 @@ def test_mmr_pool_same_between_validation_and_serving() -> None:
     ranked = [
         from_feat
         for from_feat in [
-            type("MockRanked", (), {"item_id": c.item_id, "relevance_score": c.latent_score, "features": c})()
+            type(
+                "MockRanked",
+                (),
+                {
+                    "item_id": c.item_id,
+                    "relevance_score": c.latent_score,
+                    "features": c,
+                },
+            )()
             for c in cands
         ]
     ]
@@ -232,13 +251,20 @@ def test_artifact_config_roundtrip(tmp_path: Path) -> None:
 
 def test_multi_source_candidate_generation() -> None:
     """Kiểm tra MultiSourceRetriever hợp nhất đúng SVD và Popularity, khử trùng lặp."""
+
     class MockSVD(SVDRetriever):
         def retrieve(self, user_id: int, k: int = 10, filter_seen: bool = True):
-            return [Candidate(10, 0.9, "svd", 0, {"svd": 0.9}), Candidate(20, 0.8, "svd", 1, {"svd": 0.8})]
+            return [
+                Candidate(10, 0.9, "svd", 0, {"svd": 0.9}),
+                Candidate(20, 0.8, "svd", 1, {"svd": 0.8}),
+            ]
 
     class MockPop(PopularityRetriever):
         def retrieve(self, user_id: int, k: int = 10, filter_seen: bool = True):
-            return [Candidate(20, 0.95, "popularity", 0, {"popularity": 0.95}), Candidate(30, 0.7, "popularity", 1, {"popularity": 0.7})]
+            return [
+                Candidate(20, 0.95, "popularity", 0, {"popularity": 0.95}),
+                Candidate(30, 0.7, "popularity", 1, {"popularity": 0.7}),
+            ]
 
     merger = MultiSourceRetriever(
         retrievers={
