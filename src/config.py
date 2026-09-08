@@ -50,7 +50,10 @@ class TrainConfig:
     def candidate_contract(self) -> dict[str, object]:
         """Contract duy nhất được dùng ở train, dev, test và serving."""
         return {
-            "total_k": self.candidate_k,
+            "raw_source_total_k": self.svd_candidate_k
+            + self.popularity_candidate_k
+            + self.genre_candidate_k,
+            "canonical_k": self.candidate_k,
             "sources": {
                 "svd": self.svd_candidate_k,
                 "popularity": self.popularity_candidate_k,

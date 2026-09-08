@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.config import TrainConfig
 from src.evaluation.evaluator import FullFunnelEvaluator
 from src.ranking.dataset import RankDatasetBuilder
 from src.ranking.features import N_FEATURES, CandidateFeatureBuilder
@@ -14,6 +15,15 @@ from src.reranking.diversity import DiversityReranker
 from src.retrieval.base import Candidate, CandidateRetriever
 from src.retrieval.merger import MultiSourceRetriever
 from src.retrieval.svd import SVDRetriever
+
+
+def test_candidate_contract_distinguishes_raw_and_canonical_k() -> None:
+    """Contract phải phân biệt 250 raw candidates với canonical pool K=200."""
+    contract = TrainConfig().candidate_contract
+
+    assert contract["raw_source_total_k"] == 250
+    assert contract["canonical_k"] == 200
+    assert contract["sources"] == {"svd": 150, "popularity": 50, "genre": 50}
 
 
 class _StaticRetriever(CandidateRetriever):

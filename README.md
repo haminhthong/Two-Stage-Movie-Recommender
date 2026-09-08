@@ -1,8 +1,15 @@
 # Two-Stage Movie Recommender
 
+[![CI](https://github.com/haminhthong/Two-Stage-Movie-Recommender/actions/workflows/ci.yml/badge.svg)](https://github.com/haminhthong/Two-Stage-Movie-Recommender/actions/workflows/ci.yml)
 [![Python Version](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.116-green.svg)](https://fastapi.tiangolo.com/)
-[![Tests](https://img.shields.io/badge/tests-pytest-blue.svg)](tests/)
+[![NumPy](https://img.shields.io/badge/NumPy-2.2-013243.svg)](https://numpy.org/)
+[![pandas](https://img.shields.io/badge/pandas-2.3-150458.svg)](https://pandas.pydata.org/)
+[![scikit--learn](https://img.shields.io/badge/scikit--learn-1.7-F7931E.svg)](https://scikit-learn.org/)
+[![XGBoost](https://img.shields.io/badge/XGBoost-2%2B-337AB7.svg)](https://xgboost.readthedocs.io/)
+[![pytest](https://img.shields.io/badge/tests-pytest-0A9EDC.svg)](https://docs.pytest.org/)
+[![Ruff](https://img.shields.io/badge/lint-Ruff-D7FF64.svg)](https://docs.astral.sh/ruff/)
+[![Docker](https://img.shields.io/badge/runtime-Docker-2496ED.svg)](https://www.docker.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Hệ thống gợi ý phim hai tầng trên MovieLens 1M. Pipeline hiện tại thống nhất một candidate contract cho train, Dev, Locked Test và serving:
@@ -172,6 +179,10 @@ Sau deduplication, một movie có thể xuất hiện ở nhiều nguồn nhưn
 
 RRF dùng rrf_k=60. Candidate order cuối cùng được sắp theo rrf_score giảm dần rồi truncate về candidate_k=200. Seen items bị loại theo seen set của request, không mutate state dùng cho request kế tiếp.
 
+Trong `TrainConfig.candidate_contract`, hai khái niệm này được ghi tách biệt
+thành `raw_source_total_k=250` và `canonical_k=200`, tránh hiểu nhầm tổng số
+candidate nguồn là kích thước pool cuối.
+
 ### 5.2. Ba retriever
 
 - SVD: TruncatedSVD tạo user/item latent vectors; điểm là dot product trên item chưa seen.
@@ -318,6 +329,7 @@ python -c "from src.artifacts.release import promote_release; from src.utils imp
 
 ~~~text
 Two-Stage-Recommender/
+├── .github/workflows/ci.yml
 ├── configs/
 │   ├── data.yaml
 │   ├── retrieval.yaml
@@ -349,6 +361,8 @@ Two-Stage-Recommender/
 │   ├── artifacts/              # schema, writer, loader, release
 │   └── serving/                # cold-start và online recommender
 ├── tests/
+│   ├── conftest.py             # fixture nhỏ cho clone sạch/CI
+│   └── test_*.py
 ├── Dockerfile
 ├── Makefile
 ├── requirements.txt
@@ -367,6 +381,12 @@ python -m venv .venv
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ~~~
+
+`requirements.txt` chứa cả dependency chạy ứng dụng và công cụ kiểm tra
+(`pytest`, `ruff`). CI không cần commit dataset/model binary: `tests/conftest.py`
+tạo một schema-5 release tối thiểu có manifest/hash/policy chỉ khi chưa có
+`models/production.json`. Khi chạy local với production artifact thật, fixture
+này không ghi đè artifact.
 
 Tải dữ liệu MovieLens 1M và kiểm tra checksum:
 
@@ -414,6 +434,10 @@ Evaluation tách:
 ~~~powershell
 python -m pytest -q
 ~~~
+
+CI chạy cùng contract trên Python 3.10 và 3.11, theo thứ tự: Ruff lint, Ruff
+format check rồi pytest. Bộ test fixture chỉ kiểm tra logic/API/fallback; số
+liệu recommender thật vẫn phải được tạo từ MovieLens bằng train/evaluate.
 
 Hoặc dùng Makefile:
 
