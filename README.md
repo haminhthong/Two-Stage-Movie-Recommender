@@ -353,7 +353,6 @@ Two-Stage-Recommender/
 │   ├── train.py
 │   ├── evaluate.py
 │   ├── utils.py
-│   ├── data.py                 # facade/backward-compatible exports
 │   ├── data/                   # schema, loader, interactions, split, manifest
 │   ├── retrieval/              # SVD, popularity, genre, RRF merger
 │   ├── ranking/                # dataset, features, model, trainer, scorer
