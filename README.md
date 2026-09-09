@@ -384,8 +384,9 @@ python -m pip install -r requirements.txt
 ~~~
 
 `requirements.txt` chứa cả dependency chạy ứng dụng và công cụ kiểm tra
-(`pytest`, `ruff`). CI không cần commit dataset/model binary: `tests/conftest.py`
-tạo một schema-5 release tối thiểu có manifest/hash/policy chỉ khi chưa có
+(`pytest`, `httpx`, `ruff`). `httpx` là dependency cần thiết cho
+`fastapi.testclient.TestClient`. CI không cần commit dataset/model binary:
+`tests/conftest.py` tạo một schema-5 release tối thiểu có manifest/hash/policy chỉ khi chưa có
 `models/production.json`. Khi chạy local với production artifact thật, fixture
 này không ghi đè artifact.
 
