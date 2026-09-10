@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 from ..data.split import seen_items_before
-from ..ranking.scorer import RankedCandidate
+from ..ranking.scorer import rank_candidates, retrieval_order
 from .latency import summarize_latencies
 from .metrics import (
     compute_long_tail_distribution,
@@ -197,22 +197,15 @@ class FullFunnelEvaluator:
                 user_id=u_id,
                 as_of_timestamp=test_timestamp,
             )
-            if getattr(self.engine, "ranker_enabled", False):
-                ranked_cands = self.engine.ranker.rank(
-                    features,
-                )
+            if (
+                getattr(self.engine, "ranker_enabled", False)
+                and getattr(self.engine, "learned_ranker", None) is not None
+            ):
+                ranked_cands = rank_candidates(features, self.engine.learned_ranker)
             else:
                 # Evaluation phải dùng đúng fallback của serving khi Dev model selection
-                # tắt ranker: giữ thứ tự retrieval, không tự chuyển sang
-                # WeightedFusion vì đó là một pipeline khác.
-                ranked_cands = [
-                    RankedCandidate(
-                        item_id=feature.item_id,
-                        relevance_score=1.0 - index / max(1, len(features)),
-                        features=feature,
-                    )
-                    for index, feature in enumerate(features)
-                ]
+                # tắt ranker: giữ thứ tự retrieval, không thêm heuristic khác.
+                ranked_cands = retrieval_order(features)
             t_rank = (time.perf_counter() - t1) * 1000.0
             t_rank_list.append(t_rank)
 

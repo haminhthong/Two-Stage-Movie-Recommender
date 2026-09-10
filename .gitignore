@@ -10,8 +10,7 @@ data/processed/*
 models/*
 reports/*.json
 reports/*.csv
-!reports/test_metrics.json
-!reports/ablation.json
+!reports/experiment.json
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !models/.gitkeep

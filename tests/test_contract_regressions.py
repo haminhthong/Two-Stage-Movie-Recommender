@@ -9,7 +9,6 @@ from src.config import TrainConfig
 from src.evaluation.evaluator import FullFunnelEvaluator
 from src.ranking.dataset import RankDatasetBuilder
 from src.ranking.features import N_FEATURES, CandidateFeatureBuilder
-from src.ranking.scorer import TwoStageRanker
 from src.reranking.diversity import DiversityReranker
 from src.retrieval.base import Candidate, CandidateRetriever
 from src.retrieval.merger import MultiSourceRetriever
@@ -172,7 +171,6 @@ def test_evaluator_uses_retrieval_order_when_ranker_is_disabled() -> None:
                 genre_map={1: {"Action"}, 2: {"Drama"}},
             )
             self.ranker_enabled = False
-            self.ranker = TwoStageRanker(latent_weight=0.9)
             self.diversity_reranker = DiversityReranker(
                 genre_map=self.feature_builder.genre_map,
                 default_lambda=1.0,

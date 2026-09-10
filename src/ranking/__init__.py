@@ -2,19 +2,18 @@
 
 from .dataset import RankDatasetBuilder
 from .features import FEATURE_NAMES, CandidateFeatureBuilder, CandidateFeatures
-from .model import BaseRankModel, LearnedRanker, WeightedFusionRanker
-from .scorer import RankedCandidate, TwoStageRanker
+from .model import LearnedRanker
+from .scorer import RankedCandidate, rank_candidates, retrieval_order
 from .trainer import train_learned_ranker
 
 __all__ = [
     "FEATURE_NAMES",
-    "BaseRankModel",
     "CandidateFeatureBuilder",
     "CandidateFeatures",
     "LearnedRanker",
     "RankDatasetBuilder",
     "RankedCandidate",
-    "TwoStageRanker",
-    "WeightedFusionRanker",
+    "rank_candidates",
+    "retrieval_order",
     "train_learned_ranker",
 ]

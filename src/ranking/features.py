@@ -114,7 +114,11 @@ class CandidateFeatureBuilder:
         self.item_stats = item_stats or {}
         self.interactions_df = interactions_df
         self.rating_threshold = float(rating_threshold)
-        self._snapshot_cache: dict[int, tuple[dict, dict, dict, dict]] = {}
+        self._user_timelines: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+        self._item_timelines: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+        self._item_positive_timelines: dict[int, np.ndarray] = {}
+        if interactions_df is not None:
+            self._build_timeline_indexes(interactions_df)
 
         self.pop_percentiles = _popularity_percentiles(self.popularity_scores)
         self.item_genre_counts = {
@@ -122,9 +126,36 @@ class CandidateFeatureBuilder:
             for item_id, genres in self.genre_map.items()
         }
 
+    def _build_timeline_indexes(self, interactions_df: pd.DataFrame) -> None:
+        """Lập index theo user/item để truy vấn lịch sử trước một cutoff."""
+        required = {"user_id", "item_id", "rating", "timestamp"}
+        missing = required.difference(interactions_df.columns)
+        if missing:
+            raise ValueError(f"interactions_df thiếu cột: {sorted(missing)}")
+
+        for user_id, group in interactions_df.groupby("user_id", sort=False):
+            ordered = group.sort_values("timestamp")
+            self._user_timelines[int(user_id)] = (
+                ordered["timestamp"].to_numpy(dtype=np.int64),
+                ordered["item_id"].to_numpy(dtype=np.int64),
+                ordered["rating"].to_numpy(dtype=np.float32),
+            )
+
+        for item_id, group in interactions_df.groupby("item_id", sort=False):
+            ordered = group.sort_values("timestamp")
+            timestamps = ordered["timestamp"].to_numpy(dtype=np.int64)
+            ratings = ordered["rating"].to_numpy(dtype=np.float32)
+            item_key = int(item_id)
+            self._item_timelines[item_key] = (timestamps, ratings)
+            self._item_positive_timelines[item_key] = timestamps[
+                ratings >= self.rating_threshold
+            ]
+
     def _snapshot_statistics(
         self,
         as_of_timestamp: int | None,
+        user_id: int | None = None,
+        item_ids: Sequence[int] = (),
     ) -> tuple[
         dict[int, dict[str, float]],
         dict[int, dict[str, float]],
@@ -141,55 +172,62 @@ class CandidateFeatureBuilder:
             )
 
         cutoff = int(as_of_timestamp)
-        if cutoff in self._snapshot_cache:
-            return self._snapshot_cache[cutoff]
+        user_snapshot: dict[int, dict[str, float]] = {}
+        profile_snapshot: dict[int, dict[str, float]] = {}
+        if user_id is not None and user_id in self._user_timelines:
+            timestamps, item_ids_seen, ratings = self._user_timelines[user_id]
+            end = int(np.searchsorted(timestamps, cutoff, side="left"))
+            history_ratings = ratings[:end]
+            history_items = item_ids_seen[:end]
+            if end:
+                user_snapshot[user_id] = {
+                    "positive_count": float(
+                        np.count_nonzero(history_ratings >= self.rating_threshold)
+                    ),
+                    "interaction_count": float(end),
+                    "avg_rating": float(history_ratings.mean()),
+                }
+                genre_counts: dict[str, int] = {}
+                total_genres = 0
+                for item_id in history_items[history_ratings >= self.rating_threshold]:
+                    for genre in self.genre_map.get(int(item_id), set()):
+                        genre_counts[genre] = genre_counts.get(genre, 0) + 1
+                        total_genres += 1
+                if total_genres:
+                    profile_snapshot[user_id] = {
+                        genre: count / total_genres
+                        for genre, count in genre_counts.items()
+                    }
 
-        history = self.interactions_df[self.interactions_df["timestamp"] < cutoff]
-        positive = history[history["rating"] >= self.rating_threshold]
-
-        user_stats: dict[int, dict[str, float]] = {}
-        for user_id, group in history.groupby("user_id"):
-            positive_count = int((group["rating"] >= self.rating_threshold).sum())
-            user_stats[int(user_id)] = {
-                "positive_count": float(positive_count),
-                "interaction_count": float(len(group)),
-                "avg_rating": float(group["rating"].mean()),
-            }
-
-        item_stats: dict[int, dict[str, float]] = {}
-        for item_id, group in history.groupby("item_id"):
-            item_stats[int(item_id)] = {
-                "positive_count": float(
-                    (group["rating"] >= self.rating_threshold).sum()
-                ),
-                "rating_count": float(len(group)),
-                "avg_rating": float(group["rating"].mean()),
-            }
-
-        counts = positive.groupby("item_id").size().to_dict()
-        max_count = max(counts.values(), default=1)
-        max_log = max(float(np.log1p(max_count)), 1.0)
-        popularity = {
-            int(item_id): float(np.log1p(count) / max_log)
-            for item_id, count in counts.items()
-        }
-
-        profiles: dict[int, dict[str, float]] = {}
-        for user_id, group in positive.groupby("user_id"):
-            counts_by_genre: dict[str, int] = {}
-            total = 0
-            for item_id in group["item_id"]:
-                for genre in self.genre_map.get(int(item_id), set()):
-                    counts_by_genre[genre] = counts_by_genre.get(genre, 0) + 1
-                    total += 1
-            if total:
-                profiles[int(user_id)] = {
-                    genre: count / total for genre, count in counts_by_genre.items()
+        item_snapshot: dict[int, dict[str, float]] = {}
+        for item_id in set(int(value) for value in item_ids):
+            timeline = self._item_timelines.get(item_id)
+            if timeline is None:
+                continue
+            timestamps, ratings = timeline
+            end = int(np.searchsorted(timestamps, cutoff, side="left"))
+            history_ratings = ratings[:end]
+            if end:
+                item_snapshot[item_id] = {
+                    "positive_count": float(
+                        np.count_nonzero(history_ratings >= self.rating_threshold)
+                    ),
+                    "rating_count": float(end),
+                    "avg_rating": float(history_ratings.mean()),
                 }
 
-        snapshot = (user_stats, item_stats, popularity, profiles)
-        self._snapshot_cache[cutoff] = snapshot
-        return snapshot
+        positive_counts: dict[int, int] = {}
+        for item_id, timestamps in self._item_positive_timelines.items():
+            count = int(np.searchsorted(timestamps, cutoff, side="left"))
+            if count:
+                positive_counts[item_id] = count
+        max_count = max(positive_counts.values(), default=1)
+        max_log = max(float(np.log1p(max_count)), 1.0)
+        popularity = {
+            item_id: float(np.log1p(count) / max_log)
+            for item_id, count in positive_counts.items()
+        }
+        return user_snapshot, item_snapshot, popularity, profile_snapshot
 
     def build_feature_matrix(
         self,
@@ -203,7 +241,9 @@ class CandidateFeatureBuilder:
             return np.empty((0, N_FEATURES), dtype=np.float32)
 
         user_stats, item_stats, popularity_scores, profiles = self._snapshot_statistics(
-            as_of_timestamp
+            as_of_timestamp,
+            user_id=user_id,
+            item_ids=[candidate.item_id for candidate in candidates],
         )
         pop_percentiles = (
             self.pop_percentiles

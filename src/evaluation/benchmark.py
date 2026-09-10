@@ -11,24 +11,22 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..serving.recommender import TwoStageRecommenderEngine
+from ..serving.recommender import Recommender
 
 
 def benchmark_stage_latencies(
-    engine: TwoStageRecommenderEngine,
+    engine: Recommender,
     user_ids: list[int],
     k: int = 10,
     diversity_lambda: float | None = None,
-    latent_weight: float | None = None,
 ) -> dict[str, dict[str, float]]:
     """Đo độ trễ p50 và p95 cho từng tầng trong quy trình gợi ý.
 
     Args:
-        engine (TwoStageRecommenderEngine): Inference engine.
+        engine (Recommender): Inference engine.
         user_ids (list[int]): Danh sách user IDs để benchmark.
         k (int): Số lượng item top-K.
         diversity_lambda (float | None): Lambda MMR.
-        latent_weight (float | None): Alpha.
 
     Returns:
         dict[str, dict[str, float]]: Thống kê p50/p95 từng chặng (đơn vị: ms).
@@ -43,7 +41,6 @@ def benchmark_stage_latencies(
             user_id=uid,
             k=k,
             diversity_lambda=diversity_lambda,
-            latent_weight=latent_weight,
         )
         lats = res["latencies_ms"]
         retrieval_times.append(lats["retrieval"])

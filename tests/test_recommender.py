@@ -16,10 +16,10 @@ from fastapi.testclient import TestClient
 from src.api import app
 from src.data import temporal_split
 from src.ranking.features import CandidateFeatureBuilder, CandidateFeatures
-from src.recommender import Recommender
 from src.reranking.diversity import DiversityReranker, RankedCandidate
 from src.retrieval.base import Candidate
 from src.retrieval.svd import SVDRetriever
+from src.serving.recommender import Recommender
 
 
 def _feature(
@@ -231,7 +231,7 @@ def test_api_strategy_field() -> None:
         # debug=True phải trả cả latency vì engine đã bật đo lường cho request.
         resp_debug = client.get("/recommend/1?k=5&debug=true")
         assert resp_debug.status_code == 200
-        assert resp_debug.json()["latencies_ms"] is not None
+        assert resp_debug.json()["debug"]["latencies_ms"] is not None
 
     # Unknown user
     resp_unknown = client.get("/recommend/9999999?k=5")

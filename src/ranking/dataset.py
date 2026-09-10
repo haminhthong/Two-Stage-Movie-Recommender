@@ -93,7 +93,7 @@ class RankDatasetBuilder:
             users_with_candidates += 1
 
             # Nếu Stage 1 miss target thì ghi nhận thất bại và bỏ cả query.
-            # Tuyệt đối không inject ground truth vì production cũng không thấy nó.
+            # Tuyệt đối không inject ground truth vì serving cũng không thấy nó.
             if target_item not in {candidate.item_id for candidate in candidates}:
                 continue
             retrieved_targets += 1

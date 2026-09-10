@@ -18,8 +18,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
-from src.artifacts.loader import load_production_bundle
-from src.artifacts.writer import save_versioned_bundle
 from src.data.interactions import (
     build_user_genre_profiles,
     extract_seen_items,
@@ -29,6 +27,7 @@ from src.evaluation.retrieval_metrics import (
     candidate_recall_at_k,
     target_in_catalog_rate,
 )
+from src.model_io import load_model, save_model
 from src.ranking.features import N_FEATURES, CandidateFeatures
 from src.ranking.trainer import train_learned_ranker
 from src.reranking.diversity import DiversityReranker
@@ -243,26 +242,33 @@ def test_mmr_pool_same_between_validation_and_serving() -> None:
     assert chosen_ids.issubset(top_40_ids)
 
 
-def test_artifact_config_roundtrip(tmp_path: Path) -> None:
-    """Kiểm tra lưu trữ và nạp lại bundle artifacts hoàn toàn khớp cấu trúc."""
+def test_model_config_roundtrip(tmp_path: Path) -> None:
+    """Kiểm tra model phẳng được lưu và nạp lại đúng contract."""
     user_emb = np.ones((5, 8), dtype=np.float32)
     item_emb = np.ones((10, 8), dtype=np.float32)
-    meta = {"users": [1, 2, 3], "items": [10, 20], "popular": [10, 20]}
-    cfg = {"schema_version": 4, "version": "test-bundle", "candidate_k": 200}
+    meta = {
+        "users": list(range(1, 6)),
+        "items": list(range(10, 20)),
+        "popular": [10, 11, 12],
+    }
+    cfg = {
+        "model_name": "test-model",
+        "candidate_k": 200,
+        "ranker_enabled": False,
+    }
 
-    save_versioned_bundle(
-        base_dir=tmp_path,
-        version="v4-test",
+    save_model(
+        model_dir=tmp_path,
         user_embeddings=user_emb,
         item_embeddings=item_emb,
         metadata=meta,
-        config_payload=cfg,
+        config=cfg,
     )
 
-    loaded = load_production_bundle(tmp_path)
+    loaded = load_model(tmp_path)
     assert loaded["user_embeddings"].shape == (5, 8)
     assert loaded["item_embeddings"].shape == (10, 8)
-    assert loaded["config"]["version"] == "test-bundle"
+    assert loaded["config"]["model_name"] == "test-model"
 
 
 def test_multi_source_candidate_generation() -> None:

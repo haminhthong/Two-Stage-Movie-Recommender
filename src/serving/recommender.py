@@ -18,10 +18,10 @@ from typing import Any
 
 import numpy as np
 
-from ..artifacts.loader import load_production_bundle
 from ..data.schema import RecommendationContext
+from ..model_io import load_model
 from ..ranking.features import CandidateFeatureBuilder
-from ..ranking.scorer import RankedCandidate, TwoStageRanker
+from ..ranking.scorer import rank_candidates, retrieval_order
 from ..reranking.diversity import DiversityReranker, ScoredRecommendation
 from ..retrieval.genre import GenreRetriever
 from ..retrieval.merger import MultiSourceRetriever
@@ -32,20 +32,20 @@ from .cold_start import ColdStartPolicy
 LOGGER = logging.getLogger("recommender")
 
 
-class TwoStageRecommenderEngine:
+class Recommender:
     """Động cơ điều phối toàn diện cho quá trình suy luận gợi ý thời gian thực."""
 
     def __init__(self, model_dir: str | Path | None = None) -> None:
-        """Khởi tạo Engine và nạp Model Artifacts từ bundle production."""
+        """Nạp model phẳng và khởi tạo các stage của recommender."""
         target_dir = Path(model_dir) if model_dir else Path("models")
-        bundle = load_production_bundle(target_dir)
+        bundle = load_model(target_dir)
 
         self.user_embeddings: np.ndarray = bundle["user_embeddings"]
         self.item_embeddings: np.ndarray = bundle["item_embeddings"]
         self.metadata: dict[str, Any] = bundle["metadata"]
         self.config: dict[str, Any] = bundle["config"]
         self.learned_ranker: Any | None = bundle.get("ranker")
-        self.version_name: str = bundle.get("version", "default")
+        self.model_name: str = self.config.get("model_name", "local-model")
 
         # Phân rã metadata
         self.user_map: dict[int, int] = self.metadata.get("user_map", {})
@@ -72,13 +72,6 @@ class TwoStageRecommenderEngine:
         self.item_stats: dict[int, dict[str, float]] = self.metadata.get(
             "item_stats", {}
         )
-
-        # Linear rank để tương thích ngược
-        max_denom = max(1, len(self.popular_items) - 1)
-        self.popularity_rank: dict[int, float] = {
-            int(item): 1.0 - (rank / max_denom)
-            for rank, item in enumerate(self.popular_items)
-        }
 
         # Khởi tạo Stage 1 Retrievers
         self.svd_retriever = SVDRetriever(
@@ -121,10 +114,7 @@ class TwoStageRecommenderEngine:
             }
         )
 
-        # Release mới luôn dùng canonical multi-source; chỉ release cũ mới có
-        # thể ghi rõ false để đọc artifact trước migration.
-        use_multi = bool(self.config.get("multi_source_retrieval", True))
-        self.retriever = self.multi_retriever if use_multi else self.svd_retriever
+        self.retriever = self.multi_retriever
 
         # Khởi tạo Feature Builder
         self.feature_builder = CandidateFeatureBuilder(
@@ -135,26 +125,12 @@ class TwoStageRecommenderEngine:
             item_stats=self.item_stats,
         )
 
-        # Đọc siêu tham số
-        default_alpha = float(self.config.get("latent_weight", 0.9))
         default_lambda = float(self.config.get("diversity_lambda", 0.95))
         self.rerank_pool_k = int(self.config.get("rerank_pool_k", 40))
 
         # Khởi tạo Stage 2 Ranker
         ranker_enabled = bool(self.config.get("ranker_enabled", False))
         self.ranker_enabled = ranker_enabled and self.learned_ranker is not None
-        if self.learned_ranker is not None and ranker_enabled:
-            self.ranker = TwoStageRanker(
-                rank_model=self.learned_ranker,
-                latent_weight=default_alpha,
-            )
-        else:
-            self.ranker = TwoStageRanker(
-                latent_weight=default_alpha,
-                genre_affinity_weight=float(
-                    self.config.get("genre_affinity_weight", 0.0)
-                ),
-            )
 
         # Khởi tạo Stage 3 MMR Reranker với rerank_pool_k đồng nhất
         self.diversity_reranker = DiversityReranker(
@@ -172,7 +148,6 @@ class TwoStageRecommenderEngine:
             log_popularity=self.log_popularity_scores,
         )
 
-        self.default_alpha = default_alpha
         self.default_diversity_lambda = default_lambda
 
     def cold_start_recommend(
@@ -192,7 +167,6 @@ class TwoStageRecommenderEngine:
         user_id: int,
         k: int = 10,
         diversity_lambda: float | None = None,
-        latent_weight: float | None = None,
         recent_item_ids: list[int] | None = None,
         debug: bool = False,
         request_id: str | None = None,
@@ -223,7 +197,7 @@ class TwoStageRecommenderEngine:
                     "diversity": 0.0,
                     "total": total_ms,
                 },
-                "model_version": self.version_name,
+                "model_version": self.model_name,
                 "pipeline": {
                     "candidate_count": 0,
                     "ranked_count": 0,
@@ -266,7 +240,7 @@ class TwoStageRecommenderEngine:
                     "diversity": 0.0,
                     "total": total_ms,
                 },
-                "model_version": self.version_name,
+                "model_version": self.model_name,
                 "pipeline": {
                     "candidate_count": 0,
                     "ranked_count": 0,
@@ -282,22 +256,12 @@ class TwoStageRecommenderEngine:
             as_of_timestamp=request_context.as_of_timestamp,
         )
         if self.ranker_enabled:
-            ranked_candidates = self.ranker.rank(
-                features,
-                latent_weight_override=latent_weight,
-            )
+            ranked_candidates = rank_candidates(features, self.learned_ranker)
         else:
             # Khi ranker bị tắt bởi Dev model selection hoặc artifact không sẵn sàng,
             # fallback phải là thứ tự retrieval đã freeze, không phải một
             # heuristic khác làm thay đổi contract offline/online.
-            ranked_candidates = [
-                RankedCandidate(
-                    item_id=feature.item_id,
-                    relevance_score=1.0 - index / max(1, len(features)),
-                    features=feature,
-                )
-                for index, feature in enumerate(features)
-            ]
+            ranked_candidates = retrieval_order(features)
         ranking_ms = (time.perf_counter() - t_rank_start) * 1000.0
 
         # Stage 3: MMR Diversity Reranking với rerank_pool_k đồng nhất (P0.2 fix)
@@ -317,7 +281,7 @@ class TwoStageRecommenderEngine:
             "candidate_count=%d ranking_count=%d top_k=%d retrieval_ms=%.3f "
             "ranking_ms=%.3f rerank_ms=%.3f total_ms=%.3f source_counts=%s",
             request_id or "-",
-            self.version_name,
+            self.model_name,
             len(candidates),
             len(ranked_candidates),
             len(final_recommendations),
@@ -375,7 +339,7 @@ class TwoStageRecommenderEngine:
             "user_id": user_id,
             "strategy": "two_stage_personalized",
             "items": enriched_items,
-            "model_version": self.version_name,
+            "model_version": self.model_name,
             "latencies_ms": {
                 "retrieval": retrieval_ms,
                 "ranking": ranking_ms,
@@ -398,7 +362,6 @@ class TwoStageRecommenderEngine:
         user_id: int,
         k: int = 10,
         diversity_lambda: float | None = None,
-        latent_weight: float | None = None,
         recent_item_ids: list[int] | None = None,
     ) -> list[int]:
         """Tạo danh sách top-K ID phim gợi ý cho user."""
@@ -406,7 +369,6 @@ class TwoStageRecommenderEngine:
             user_id=user_id,
             k=k,
             diversity_lambda=diversity_lambda,
-            latent_weight=latent_weight,
             recent_item_ids=recent_item_ids,
         )
         return [item["item_id"] for item in detail["items"]]
@@ -416,7 +378,6 @@ class TwoStageRecommenderEngine:
         user_id: int,
         k: int = 10,
         diversity_lambda: float | None = None,
-        latent_weight: float | None = None,
         recent_item_ids: list[int] | None = None,
     ) -> list[dict[str, Any]]:
         """Tạo danh sách gợi ý kèm metadata chuẩn UI."""
@@ -424,7 +385,6 @@ class TwoStageRecommenderEngine:
             user_id=user_id,
             k=k,
             diversity_lambda=diversity_lambda,
-            latent_weight=latent_weight,
             recent_item_ids=recent_item_ids,
         )
         return [
