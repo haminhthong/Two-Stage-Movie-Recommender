@@ -1,0 +1,96 @@
+{
+  "protocol": {
+    "dataset": "MovieLens 1M",
+    "seed": 42,
+    "candidate_k": 200,
+    "rerank_pool_k": 40,
+    "final_k": 10,
+    "split": "per-user temporal holdout",
+    "ranker": "XGBRanker(objective=rank:ndcg)",
+    "feature_count": 19,
+    "same_test_users": true
+  },
+  "model": {
+    "model_name": "movielens-two-stage-recommender",
+    "ranker_enabled": true,
+    "trained_ranker_available": true,
+    "selected_ranker": "xgb_ranker",
+    "mmr_lambda": 0.8
+  },
+  "test": {
+    "evaluated_users": 6035,
+    "target_in_catalog_rate": 0.99983429991715,
+    "cold_item_test_share": 0.0001657000828499955,
+    "variants": {
+      "Popularity": {
+        "recall@10": 0.043910521955260975,
+        "ndcg@10": 0.021766058212628715,
+        "mrr@10": 0.015218171775752555,
+        "catalog_coverage": 0.048635503917860035,
+        "user_coverage": 1.0,
+        "intra_list_diversity": 0.7806642688374256,
+        "novelty@10": 8.123048272597464,
+        "p50_latency_ms": 0.5091000002721557,
+        "p95_latency_ms": 1.5005299999302226,
+        "recall@200": 0.3643744821872411
+      },
+      "SVD": {
+        "recall@10": 0.07986743993371996,
+        "ndcg@10": 0.03974744851252229,
+        "mrr@10": 0.02766941518391394,
+        "catalog_coverage": 0.2361523912456093,
+        "user_coverage": 1.0,
+        "intra_list_diversity": 0.7604328425162449,
+        "novelty@10": 9.310419504020642,
+        "p50_latency_ms": 2.609199999824341,
+        "p95_latency_ms": 5.625269999973173,
+        "recall@200": 0.5222866611433306
+      },
+      "Multi-source RRF": {
+        "recall@10": 0.05517812758906379,
+        "ndcg@10": 0.02705996804193398,
+        "mrr@10": 0.018590628739758815,
+        "catalog_coverage": 0.08430154012429074,
+        "user_coverage": 1.0,
+        "intra_list_diversity": 0.7785752101570936,
+        "novelty@10": 8.452268037474148,
+        "p50_latency_ms": 10.326399999939895,
+        "p95_latency_ms": 19.811169999775306,
+        "recall@200": 0.5149958574979288
+      },
+      "RRF + XGBRanker": {
+        "recall@10": 0.07539353769676885,
+        "ndcg@10": 0.03597178212839464,
+        "mrr@10": 0.024215949290514325,
+        "catalog_coverage": 0.38151850851121316,
+        "user_coverage": 1.0,
+        "intra_list_diversity": 0.741289064817372,
+        "novelty@10": 9.563423735665815,
+        "p50_latency_ms": 2.120999999988271,
+        "p95_latency_ms": 3.8562299999284737,
+        "recall@200": 0.5149958574979288
+      },
+      "RRF + XGBRanker + MMR": {
+        "recall@10": 0.07555923777961888,
+        "ndcg@10": 0.03584044899062317,
+        "mrr@10": 0.024003958390868083,
+        "catalog_coverage": 0.3798973250472845,
+        "user_coverage": 1.0,
+        "intra_list_diversity": 0.7546692223055106,
+        "novelty@10": 9.551578638599295,
+        "p50_latency_ms": 0.7735999997748877,
+        "p95_latency_ms": 2.2523499999806518,
+        "recall@200": 0.5149958574979288
+      }
+    }
+  },
+  "funnel": {
+    "candidate_recall": {
+      "recall@50": 0.18293289146644573,
+      "recall@100": 0.3443247721623861,
+      "recall@200": 0.5149958574979288
+    },
+    "raw_candidates": 250,
+    "canonical_candidates": 200
+  }
+}

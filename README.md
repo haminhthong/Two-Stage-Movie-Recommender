@@ -45,23 +45,24 @@ candidate K và final K; không ghép số liệu giữa các experiment khác n
 
 | Configuration | Recall@200 | nDCG@10 | MRR@10 | Coverage | Diversity |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Popularity | — | — | — | — | — |
-| SVD | — | — | — | — | — |
-| Multi-source RRF | — | — | — | — | — |
-| RRF + XGBRanker | — | — | — | — | — |
-| RRF + XGBRanker + MMR | — | — | — | — | — |
+| Popularity | 0.3644 | 0.0218 | 0.0152 | 0.0486 | 0.7807 |
+| SVD | 0.5223 | 0.0397 | 0.0277 | 0.2362 | 0.7604 |
+| Multi-source RRF | 0.5150 | 0.0271 | 0.0186 | 0.0843 | 0.7786 |
+| RRF + XGBRanker | 0.5150 | 0.0360 | 0.0242 | 0.3815 | 0.7413 |
+| RRF + XGBRanker + MMR | 0.5150 | 0.0358 | 0.0240 | 0.3799 | 0.7547 |
 
-Các ô được điền sau khi chạy train/evaluate từ cùng artifact. `Recall@200` là
-candidate recall của Stage 1; các cột còn lại là metric top-10. `Coverage` là
-catalog coverage và `Diversity` là ILD. Không tự điền số liệu cũ khác protocol.
+Snapshot này được sinh từ cùng một run: MovieLens 1M, seed 42, 6.035 test users,
+candidate K=200, rerank pool K=40 và final K=10. `Recall@200` là candidate
+recall của Stage 1; với XGB/MMR nó vẫn là recall trước ranking. Các cột còn lại
+là metric top-10; `Coverage` là catalog coverage và `Diversity` là ILD.
 
 ### Candidate funnel
 
 | Stage-1 cutoff | Recall |
 | ---: | ---: |
-| 50 | — |
-| 100 | — |
-| 200 | — |
+| 50 | 0.1829 |
+| 100 | 0.3443 |
+| 200 | 0.5150 |
 
 Chi tiết test users, cold-item share, latency và Dev model selection nằm trong
 `reports/experiment.json` sau khi chạy experiment.
