@@ -219,7 +219,13 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
         retrieval_recalls.append(ranker_recall_at_k(retrieval_ids, target, cfg.final_k))
         ranker_ndcgs.append(ranker_ndcg_at_k(ranked_ids, target, cfg.final_k))
         ranker_recalls.append(ranker_recall_at_k(ranked_ids, target, cfg.final_k))
-        val_ranked[user_id] = (target, ranked, ordered)
+        # Dev MMR chỉ nhìn rerank_pool_k; không giữ toàn bộ 200 object cho
+        # hàng nghìn user vì validation không cần chúng sau khi tính metric.
+        val_ranked[user_id] = (
+            target,
+            ranked[: cfg.rerank_pool_k],
+            ordered[: cfg.rerank_pool_k],
+        )
 
     retrieval_ndcg = _mean(retrieval_ndcgs)
     retrieval_recall = _mean(retrieval_recalls)
