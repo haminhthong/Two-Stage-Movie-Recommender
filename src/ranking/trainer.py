@@ -24,7 +24,8 @@ def train_learned_ranker(
         X: Ma trận đặc trưng (N_samples, N_features).
         y: Nhãn nhị phân (1 = positive target, 0 = sampled candidate negative).
         groups: Số lượng candidate của từng query/user group.
-        model_type: ``xgboost``/``xgb_ranker`` hoặc fallback ``logistic_regression``.
+        model_type: ``xgboost``/``xgb_ranker``/``lambdamart``. LogisticRegression
+            chỉ được dùng khi gọi tường minh cho ablation.
         seed: Random seed.
 
     Returns:
@@ -51,29 +52,30 @@ def train_learned_ranker(
     if model_type in {"xgboost", "xgb_ranker", "lambdamart"}:
         try:
             import xgboost as xgb
+        except ImportError as exc:
+            raise RuntimeError(
+                "XGBoost là dependency bắt buộc cho ranker chính. "
+                "Hãy cài requirements.txt hoặc gọi model_type='logistic_regression' "
+                "chỉ cho ablation."
+            ) from exc
 
-            estimator = xgb.XGBRanker(
-                n_estimators=100,
-                max_depth=4,
-                learning_rate=0.08,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                random_state=seed,
-                objective="rank:ndcg",
-                eval_metric="ndcg@10",
-                n_jobs=-1,
-            )
-            estimator.fit(X, y, group=groups)
-            LOGGER.info(
-                "Đã hoàn thành huấn luyện XGBRanker rank:ndcg trên %d query groups.",
-                len(groups),
-            )
-            return LearnedRanker(estimator=estimator, model_type="xgb_ranker")
-        except ImportError:
-            LOGGER.warning(
-                "Không có xgboost; dùng LogisticRegression làm fallback classifier."
-            )
-            model_type = "logistic_regression"
+        estimator = xgb.XGBRanker(
+            n_estimators=100,
+            max_depth=4,
+            learning_rate=0.08,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=seed,
+            objective="rank:ndcg",
+            eval_metric="ndcg@10",
+            n_jobs=-1,
+        )
+        estimator.fit(X, y, group=groups)
+        LOGGER.info(
+            "Đã hoàn thành huấn luyện XGBRanker rank:ndcg trên %d query groups.",
+            len(groups),
+        )
+        return LearnedRanker(estimator=estimator, model_type="xgb_ranker")
 
     if model_type == "logistic_regression":
         from sklearn.linear_model import LogisticRegression

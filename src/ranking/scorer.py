@@ -74,7 +74,7 @@ class TwoStageRanker:
                 relevance_score=float(score),
                 features=feat,
             )
-            for feat, score in zip(features, scores)
+            for feat, score in zip(features, scores, strict=True)
         ]
 
         ranked.sort(key=lambda r: r.relevance_score, reverse=True)

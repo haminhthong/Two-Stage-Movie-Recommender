@@ -1,7 +1,0 @@
-# Hợp đồng dữ liệu offline.
-dataset: movielens-1m
-rating_threshold: 4.0
-feedback: implicit_positive
-seen_filter: all_interactions_before_request_timestamp
-split_protocol: per_user_temporal_holdout
-negative_sampling: sampled_non_interaction_proxy_from_stage1_candidates

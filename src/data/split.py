@@ -1,12 +1,4 @@
-"""Module phân chia dữ liệu theo thời gian (Temporal Split Strategies).
-
-Quy ước:
-1. Giao thức là 'Per-User Temporal Holdout': đảm bảo thứ tự thời gian cho từng người dùng,
-   loại bỏ rò rỉ tương lai (no future leakage). Không overclaim là strict global point-in-time snapshot.
-2. Hỗ trợ 2 chiến lược:
-   - 4-Way Temporal Split: Retrieval History -> Rank-Train Target -> Validation Target -> Test Target.
-   - 3-Way Temporal Split: Train -> Validation -> Test (Tương thích ngược).
-"""
+"""Phân chia dữ liệu theo giao thức per-user temporal holdout."""
 
 from __future__ import annotations
 
@@ -23,73 +15,10 @@ def seen_items_before(
     return set(history["item_id"].astype(int).tolist())
 
 
-def global_temporal_windows(
-    df: pd.DataFrame,
-    train_fraction: float = 0.60,
-    rank_fraction: float = 0.15,
-    validation_fraction: float = 0.15,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Tạo expanding global temporal windows cho backtest cross-user.
-
-    Các dòng được sắp theo timestamp toàn cục; vì vậy snapshot của mỗi window
-    không thể lấy dữ liệu từ tương lai của user khác.
-    """
-    if not 0 < train_fraction < 1 or rank_fraction < 0 or validation_fraction < 0:
-        raise ValueError("Các tỷ lệ temporal window không hợp lệ.")
-    if train_fraction + rank_fraction + validation_fraction >= 1:
-        raise ValueError("Tổng train/rank/validation phải nhỏ hơn 1.")
-
-    ordered = df.sort_values(["timestamp", "user_id", "item_id"]).reset_index(drop=True)
-    row_count = len(ordered)
-    train_end = max(1, int(row_count * train_fraction))
-    rank_end = max(train_end, int(row_count * (train_fraction + rank_fraction)))
-    val_end = max(
-        rank_end,
-        int(row_count * (train_fraction + rank_fraction + validation_fraction)),
-    )
-    return (
-        ordered.iloc[:train_end].copy(),
-        ordered.iloc[train_end:rank_end].copy(),
-        ordered.iloc[rank_end:val_end].copy(),
-        ordered.iloc[val_end:].copy(),
-    )
-
-
-def time_split(
-    df: pd.DataFrame,
-    rating_threshold: float = 4.0,
-    min_positive: int = 3,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Phân chia dữ liệu theo chiến lược Leave-Last-Two Positive Per User (3-Way Split).
-
-    - Test: Tương tác tích cực mới nhất (pos_rank = 0).
-    - Validation: Tương tác tích cực kề cuối (pos_rank = 1).
-    - Train: Toàn bộ tương tác diễn ra trước mốc thời gian của Validation (timestamp < val_timestamp).
-    """
-    positive_df = df.sort_values(["user_id", "timestamp", "item_id"]).copy()
-    positive_df = positive_df[positive_df["rating"] >= rating_threshold].copy()
-    user_pos_counts = positive_df.groupby("user_id").size()
-    eligible_users = user_pos_counts[user_pos_counts >= min_positive].index
-
-    pos_eligible = positive_df[positive_df["user_id"].isin(eligible_users)].copy()
-    pos_rank = pos_eligible.groupby("user_id").cumcount(ascending=False)
-
-    test_df = pos_eligible[pos_rank == 0].copy()
-    val_df = pos_eligible[pos_rank == 1].copy()
-
-    val_timestamps = val_df.set_index("user_id")["timestamp"]
-    cutoff_series = df["user_id"].map(val_timestamps)
-    train_mask = cutoff_series.isna() | (df["timestamp"] < cutoff_series)
-    train_df = df[train_mask].copy()
-
-    return train_df, val_df, test_df
-
-
-def temporal_split_four_way(
+def temporal_split(
     df: pd.DataFrame,
     rating_threshold: float = 4.0,
     min_positive: int = 4,
-    protocol: str = "per_user",
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Phân chia 4 tập độc lập theo thời gian (4-Way Per-User Temporal Holdout).
 
@@ -107,11 +36,6 @@ def temporal_split_four_way(
     Returns:
         tuple: (retrieval_train_df, rank_train_df, val_df, test_df)
     """
-    if protocol == "global":
-        return global_temporal_windows(df)
-    if protocol != "per_user":
-        raise ValueError("protocol phải là 'per_user' hoặc 'global'.")
-
     positive_df = df.sort_values(["user_id", "timestamp", "item_id"]).copy()
     positive_df = positive_df[positive_df["rating"] >= rating_threshold].copy()
     user_pos_counts = positive_df.groupby("user_id").size()

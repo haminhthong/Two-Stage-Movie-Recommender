@@ -13,14 +13,41 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from fastapi.testclient import TestClient
-
 from src.api import app
-from src.data import time_split
-from src.ranking.diversity import DiversityReranker, RankedCandidate
+from src.data import temporal_split
 from src.ranking.features import CandidateFeatureBuilder, CandidateFeatures
 from src.recommender import Recommender
+from src.reranking.diversity import DiversityReranker, RankedCandidate
 from src.retrieval.base import Candidate
 from src.retrieval.svd import SVDRetriever
+
+
+def _feature(
+    item_id: int, svd_score: float, popularity_score: float
+) -> CandidateFeatures:
+    """Tạo feature fixture đúng schema 19 cột."""
+    return CandidateFeatures(
+        item_id=item_id,
+        svd_score=svd_score,
+        svd_rank=item_id,
+        popularity_retrieval_score=popularity_score,
+        popularity_rank=item_id,
+        genre_retrieval_score=0.0,
+        genre_rank=0,
+        rrf_score=1.0,
+        source_count=2.0,
+        user_positive_count=0,
+        user_interaction_count=0,
+        user_avg_rating=4.0,
+        genre_entropy=0.0,
+        item_positive_count=0,
+        item_rating_count=0,
+        item_avg_rating=3.5,
+        item_popularity_percentile=0.5,
+        item_genre_count=1,
+        genre_affinity=0.0,
+        genre_overlap_count=0,
+    )
 
 
 def test_temporal_split_no_future_leakage() -> None:
@@ -33,14 +60,16 @@ def test_temporal_split_no_future_leakage() -> None:
             "timestamp": [1000, 2000, 3000, 4000, 500, 600, 700],
         }
     )
-    train_df, _val_df, _test_df = time_split(df, rating_threshold=4.0, min_positive=3)
+    train_df, _rank_df, _val_df, _test_df = temporal_split(
+        df, rating_threshold=4.0, min_positive=3
+    )
 
     # User 1: positive tại 1000, 2000, 3000, 4000.
     # test = item 40 (ts=4000), val = item 30 (ts=3000).
-    # train phải chỉ chứa ts < 3000 (tức ts=1000, ts=2000).
+    # Retrieval train phải chỉ chứa timestamp trước rank-train target ts=2000.
     user_1_train = train_df[train_df["user_id"] == 1]
-    assert all(user_1_train["timestamp"] < 3000)
-    assert set(user_1_train["item_id"]) == {10, 20}
+    assert all(user_1_train["timestamp"] < 2000)
+    assert set(user_1_train["item_id"]) == {10}
 
 
 def test_test_item_not_in_training() -> None:
@@ -53,7 +82,9 @@ def test_test_item_not_in_training() -> None:
             "timestamp": [100, 200, 300],
         }
     )
-    train_df, _val_df, test_df = time_split(df, rating_threshold=4.0, min_positive=3)
+    train_df, _rank_df, _val_df, test_df = temporal_split(
+        df, rating_threshold=4.0, min_positive=3
+    )
 
     test_item = test_df.iloc[0]["item_id"]
     train_items = set(train_df[train_df["user_id"] == 1]["item_id"])
@@ -121,24 +152,37 @@ def test_ranking_deterministic() -> None:
     assert preds_1 == preds_2
 
 
-def test_diversity_lambda_zero_equals_base_rank() -> None:
-    """Kiểm tra khi diversity_lambda=0, thứ tự trả về khớp hoàn toàn thứ tự điểm số relevance của ranker."""
+def test_diversity_lambda_one_equals_base_rank() -> None:
+    """Lambda=1 phải giữ thuần thứ tự relevance, không áp dụng phạt diversity."""
     genre_map = {1: {"Action"}, 2: {"Action"}, 3: {"Drama"}}
-    reranker = DiversityReranker(genre_map=genre_map, default_lambda=0.0)
+    reranker = DiversityReranker(genre_map=genre_map, default_lambda=1.0)
 
     cands = [
         RankedCandidate(
-            item_id=1, relevance_score=0.95, features=CandidateFeatures(1, 0.95, 0.8)
+            item_id=1, relevance_score=0.95, features=_feature(1, 0.95, 0.8)
         ),
         RankedCandidate(
-            item_id=2, relevance_score=0.90, features=CandidateFeatures(2, 0.90, 0.7)
+            item_id=2, relevance_score=0.90, features=_feature(2, 0.90, 0.7)
         ),
         RankedCandidate(
-            item_id=3, relevance_score=0.70, features=CandidateFeatures(3, 0.70, 0.5)
+            item_id=3, relevance_score=0.70, features=_feature(3, 0.70, 0.5)
         ),
     ]
-    reranked = reranker.rerank(cands, k=3, diversity_lambda_override=0.0)
+    reranked = reranker.rerank(cands, k=3, diversity_lambda_override=1.0)
     assert [r.item_id for r in reranked] == [1, 2, 3]
+
+
+def test_diversity_lambda_zero_prefers_unseen_genres() -> None:
+    """Lambda=0 phải tối đa hóa diversity trong pool, không tắt bước MMR."""
+    genre_map = {1: {"Action"}, 2: {"Action"}, 3: {"Drama"}}
+    reranker = DiversityReranker(genre_map=genre_map, default_lambda=0.0)
+    cands = [
+        RankedCandidate(item_id=1, relevance_score=0.95),
+        RankedCandidate(item_id=2, relevance_score=0.90),
+        RankedCandidate(item_id=3, relevance_score=0.70),
+    ]
+    reranked = reranker.rerank(cands, k=3, diversity_lambda_override=0.0)
+    assert [r.item_id for r in reranked] == [1, 3, 2]
 
 
 def test_high_diversity_reduces_genre_similarity() -> None:
@@ -151,13 +195,13 @@ def test_high_diversity_reduces_genre_similarity() -> None:
     # Trong khi item 3 có Jaccard=0.0 -> score giữ nguyên 0.85. Item 3 phải vượt lên trước item 2!
     cands = [
         RankedCandidate(
-            item_id=1, relevance_score=0.90, features=CandidateFeatures(1, 0.90, 0.8)
+            item_id=1, relevance_score=0.90, features=_feature(1, 0.90, 0.8)
         ),
         RankedCandidate(
-            item_id=2, relevance_score=0.89, features=CandidateFeatures(2, 0.89, 0.8)
+            item_id=2, relevance_score=0.89, features=_feature(2, 0.89, 0.8)
         ),
         RankedCandidate(
-            item_id=3, relevance_score=0.85, features=CandidateFeatures(3, 0.85, 0.7)
+            item_id=3, relevance_score=0.85, features=_feature(3, 0.85, 0.7)
         ),
     ]
     reranked = reranker.rerank(cands, k=3, diversity_lambda_override=0.5)

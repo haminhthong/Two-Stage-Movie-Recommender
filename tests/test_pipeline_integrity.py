@@ -18,25 +18,52 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
-
 from src.artifacts.loader import load_production_bundle
 from src.artifacts.writer import save_versioned_bundle
 from src.data.interactions import (
     build_user_genre_profiles,
     extract_seen_items,
 )
-from src.data.split import temporal_split_four_way
+from src.data.split import temporal_split
 from src.evaluation.retrieval_metrics import (
     candidate_recall_at_k,
     target_in_catalog_rate,
 )
-from src.ranking.features import CandidateFeatures
+from src.ranking.features import N_FEATURES, CandidateFeatures
 from src.ranking.trainer import train_learned_ranker
 from src.reranking.diversity import DiversityReranker
 from src.retrieval.base import Candidate
 from src.retrieval.merger import MultiSourceRetriever
 from src.retrieval.popularity import PopularityRetriever
 from src.retrieval.svd import SVDRetriever
+
+
+def _feature(
+    item_id: int, svd_score: float, popularity_score: float
+) -> CandidateFeatures:
+    """Tạo fixture theo đúng feature contract 19 cột."""
+    return CandidateFeatures(
+        item_id=item_id,
+        svd_score=svd_score,
+        svd_rank=item_id,
+        popularity_retrieval_score=popularity_score,
+        popularity_rank=item_id,
+        genre_retrieval_score=0.0,
+        genre_rank=0,
+        rrf_score=1.0,
+        source_count=2.0,
+        user_positive_count=0,
+        user_interaction_count=0,
+        user_avg_rating=4.0,
+        genre_entropy=0.0,
+        item_positive_count=0,
+        item_rating_count=0,
+        item_avg_rating=3.5,
+        item_popularity_percentile=0.5,
+        item_genre_count=1,
+        genre_affinity=0.0,
+        genre_overlap_count=0,
+    )
 
 
 def test_no_validation_item_in_user_history() -> None:
@@ -49,9 +76,7 @@ def test_no_validation_item_in_user_history() -> None:
             "timestamp": [100, 200, 300, 400, 500],
         }
     )
-    ret_train, _rank_train, val_df, _test_df = temporal_split_four_way(
-        data, min_positive=4
-    )
+    ret_train, _rank_train, val_df, _test_df = temporal_split(data, min_positive=4)
 
     val_item = val_df.iloc[0]["item_id"]
     ret_items = set(ret_train[ret_train["user_id"] == 1]["item_id"])
@@ -68,9 +93,7 @@ def test_no_test_item_in_user_history() -> None:
             "timestamp": [100, 200, 300, 400, 500],
         }
     )
-    ret_train, rank_train, _val_df, test_df = temporal_split_four_way(
-        data, min_positive=4
-    )
+    ret_train, rank_train, _val_df, test_df = temporal_split(data, min_positive=4)
 
     test_item = test_df.iloc[0]["item_id"]
     ret_items = set(ret_train[ret_train["user_id"] == 1]["item_id"])
@@ -151,9 +174,7 @@ def test_rank_training_candidates_use_only_past_history() -> None:
             "timestamp": [10, 20, 30, 40, 50],
         }
     )
-    ret_train, rank_train, _val_df, _test_df = temporal_split_four_way(
-        df, min_positive=4
-    )
+    ret_train, rank_train, _val_df, _test_df = temporal_split(df, min_positive=4)
 
     rank_ts = rank_train.iloc[0]["timestamp"]
     ret_ts = ret_train[ret_train["user_id"] == 1]["timestamp"]
@@ -170,9 +191,7 @@ def test_validation_never_used_to_fit_ranker() -> None:
             "timestamp": [100, 200, 300, 400],
         }
     )
-    _ret_train, rank_train, val_df, test_df = temporal_split_four_way(
-        df, min_positive=4
-    )
+    _ret_train, rank_train, val_df, test_df = temporal_split(df, min_positive=4)
 
     t_rank = rank_train.iloc[0]["timestamp"]
     t_val = val_df.iloc[0]["timestamp"]
@@ -191,7 +210,7 @@ def test_test_never_used_for_tuning() -> None:
             "timestamp": [100, 200, 300, 400],
         }
     )
-    _, _, val_df, test_df = temporal_split_four_way(df, min_positive=4)
+    _, _, val_df, test_df = temporal_split(df, min_positive=4)
     assert val_df.iloc[0]["timestamp"] < test_df.iloc[0]["timestamp"]
 
 
@@ -200,10 +219,7 @@ def test_mmr_pool_same_between_validation_and_serving() -> None:
     reranker = DiversityReranker(default_lambda=0.1, default_rerank_pool_k=40)
     assert reranker.default_rerank_pool_k == 40
 
-    cands = [
-        CandidateFeatures(item_id=i, latent_score=1.0 - i * 0.01, popularity_score=0.5)
-        for i in range(100)
-    ]
+    cands = [_feature(i, 1.0 - i * 0.01, 0.5) for i in range(100)]
     ranked = [
         from_feat
         for from_feat in [
@@ -212,7 +228,7 @@ def test_mmr_pool_same_between_validation_and_serving() -> None:
                 (),
                 {
                     "item_id": c.item_id,
-                    "relevance_score": c.latent_score,
+                    "relevance_score": c.svd_score,
                     "features": c,
                 },
             )()
@@ -285,20 +301,34 @@ def test_multi_source_candidate_generation() -> None:
 
 def test_learned_ranker_fit_and_predict() -> None:
     """Kiểm tra LearnedRanker huấn luyện trên dữ liệu và sinh điểm hợp lệ [0, 1]."""
-    # 2 features, 10 samples
-    X = np.random.randn(20, 15).astype(np.float32)
+    X = np.random.randn(20, N_FEATURES).astype(np.float32)
     y = np.array([1, 0] * 10, dtype=np.int32)
 
     ranker = train_learned_ranker(X, y, model_type="logistic_regression", seed=42)
     assert ranker is not None
 
     feats = [
-        CandidateFeatures(item_id=1, latent_score=0.9, popularity_score=0.8),
-        CandidateFeatures(item_id=2, latent_score=0.1, popularity_score=0.2),
+        _feature(1, 0.9, 0.8),
+        _feature(2, 0.1, 0.2),
     ]
     scores = ranker.predict_scores(feats)
     assert len(scores) == 2
     assert all(0.0 <= s <= 1.0 for s in scores)
+
+
+def test_xgb_ranker_uses_grouped_ndcg_objective() -> None:
+    """Ranker chính phải huấn luyện được với query groups và objective rank:ndcg."""
+    X = np.random.default_rng(42).normal(size=(20, N_FEATURES)).astype(np.float32)
+    y = np.array([1, 0] * 10, dtype=np.int32)
+
+    ranker = train_learned_ranker(
+        X, y, groups=np.full(10, 2, dtype=np.int32), model_type="xgb_ranker", seed=42
+    )
+
+    assert ranker.model_type == "xgb_ranker"
+    assert ranker.estimator.get_xgb_params()["objective"] == "rank:ndcg"
+    scores = ranker.predict_scores([_feature(1, 0.9, 0.8)])
+    assert scores.shape == (1,)
 
 
 def test_absolute_gain_and_relative_lift_calculations() -> None:

@@ -13,13 +13,15 @@
 [![Docker](https://img.shields.io/badge/runtime-Docker-2496ED.svg)](https://www.docker.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Hệ thống gợi ý phim hai tầng trên MovieLens 1M. Pipeline hiện tại thống nhất một candidate contract cho train, Dev, Locked Test và serving:
+Hệ thống gợi ý phim hai tầng trên MovieLens 1M. `TrainConfig` trong
+`src/config.py` là nguồn cấu hình chính cho train, Dev, Locked Test và serving;
+không có bộ YAML song song gây drift.
 
 - Stage 1: SVD + Popularity + Genre tạo candidate thô.
 - RRF merge, deduplication và truncate về canonical pool K=200.
 - Stage 2: group-aware Learning-to-Rank bằng XGBRanker với objective rank:ndcg và query groups.
 - Stage 3: MMR trên pool 40, giữ relevance guardrail và trả tối đa 10 phim.
-- Khi learned ranker không qua quality gate hoặc artifact ranker không khả dụng, hệ thống fallback về retrieval order.
+- Khi learned ranker không qua Dev model selection hoặc artifact ranker không khả dụng, hệ thống fallback về retrieval order.
 
 > README này mô tả code đang có trong repository. Các số liệu trong phần Results là snapshot từ reports hiện tại, không phải cam kết SLA production.
 
@@ -37,7 +39,9 @@ Bảng dưới đây đặt toàn bộ funnel lên cùng một trang. Dấu — 
 | + XGBRanker | — | 0.0239 | — | — | — |
 | + MMR | — | 0.0239 | 0.0143 | 0.4834 catalog | 0.7358 ILD |
 
-Các giá trị trên lấy từ reports/test_metrics.json và reports/ablation.json. Các report cũ không phải cùng một release protocol hoàn chỉnh, vì vậy cần đọc cùng metadata và không dùng trực tiếp để chọn model mới.
+Các giá trị trên lấy từ `reports/test_metrics.json` và `reports/ablation.json`.
+Hai report là snapshot của các lần chạy khác nhau; cần regenerate cùng artifact
+và protocol trước khi dùng để chọn model mới.
 
 ### 1.2. Kết quả Locked Test đang có
 
@@ -66,7 +70,7 @@ Output mặc định là 10 movie chưa từng xuất hiện trong lịch sử c
 
 1. Không rò rỉ tương lai qua split hoặc feature snapshot.
 2. Đưa item đúng vào candidate pool trước khi tối ưu rank.
-3. Duy trì fallback deterministic khi ranker lỗi hoặc không qua gate.
+3. Duy trì fallback deterministic khi ranker lỗi hoặc không qua Dev model selection.
 4. Theo dõi riêng retrieval quality, ranking quality, diversity, coverage và latency.
 
 Phạm vi hiện tại là offline training, offline evaluation và FastAPI serving cục bộ/container. Chưa có impression log, feedback online, feature store, model registry bên ngoài hoặc monitoring production đầy đủ.
@@ -108,7 +112,7 @@ flowchart TD
     Q1 --> T["✅ Group-aware ranker training"]
     Q2 --> T
     T --> T1["XGBRanker objective rank:ndcg"]
-    T1 --> G["✅ Dev quality gate"]
+    T1 --> G["✅ Dev model selection"]
     G -->|pass| H["✅ Learned ranker"]
     G -->|fail| I["✅ Retrieval-order fallback"]
 
@@ -197,7 +201,9 @@ Tên đúng của tầng này là **Group-aware Learning-to-Rank scorer**. Khôn
 
     XGBRanker(objective="rank:ndcg")
 
-và truyền query group cho các row của từng user. Có LogisticRegression fallback trong môi trường thiếu XGBoost, nhưng contract chính vẫn là XGBRanker; model type được ghi vào artifact config.
+và truyền query group cho các row của từng user. XGBoost là dependency bắt buộc
+của ranker chính. LogisticRegression chỉ được gọi tường minh cho ablation;
+thiếu XGBoost phải fail rõ ràng, không fallback âm thầm sang classifier khác.
 
 ### 6.1. 19 features hiện tại
 
@@ -229,15 +235,15 @@ Các source score và source rank có giá trị riêng, không bị gộp thàn
 
 Mỗi user là một query group. Target positive được gán y=1 nếu target xuất hiện trong candidate pool; các candidate còn lại là y=0 proxy. Nếu target bị Stage 1 miss, toàn bộ sample user đó không được dùng để giả tạo positive cho ranker.
 
-Training chỉ dùng rank-train split. Dev dùng để chọn/tune quality gate và MMR config. Locked Test chỉ chạy sau khi pipeline đã freeze.
+Training chỉ dùng rank-train split. Dev dùng để chọn ranker và tune MMR config. Locked Test chỉ chạy sau khi pipeline đã freeze.
 
-### 6.3. Quality gate và fallback
+### 6.3. Dev model selection và fallback
 
-Train tạo Release Candidate dưới models/candidates/<version>. Ranker chỉ trở thành learned ranker active nếu vượt gate trên Dev. Nếu không vượt:
+Train tạo Release Candidate dưới models/candidates/<version>. Ranker chỉ trở thành learned ranker active nếu vượt Dev model selection. Nếu không vượt:
 
 - serving dùng retrieval order;
 - evaluation vẫn ghi rõ ranker không active;
-- không dùng WeightedFusionRanker như một hành vi ngầm khác với contract;
+- không dùng WeightedFusionRanker như một hành vi ngầm khác với contract; baseline này chỉ dành cho ablation;
 - artifact vẫn giữ model/config để audit, nhưng production pointer không tự đổi.
 
 ## 7. Stage 3 — MMR và business guardrails
@@ -252,7 +258,10 @@ MMR tối ưu tuần tự trên top 40 candidate sau retrieval/ranking. Seen fil
     union = (mask_a | mask_b).bit_count()
     jaccard = intersection / union
 
-MMR lambda mặc định là 0.95. Dev có thể khảo sát candidate pool, nhưng không được biến kết quả trên Locked Test thành tuning signal. MMR pool 40 là engineering trade-off hiện tại, không phải chứng minh toán học tối ưu.
+MMR lambda mặc định là 0.95. `lambda=1` là thuần relevance, `lambda=0` là
+thuần diversity; giá trị 0 không phải cờ tắt MMR. Dev có thể khảo sát candidate
+pool, nhưng không được biến kết quả trên Locked Test thành tuning signal. MMR
+pool 40 là engineering trade-off hiện tại, không phải chứng minh tối ưu toàn cục.
 
 ## 8. Cold-start và failure behavior
 
@@ -279,12 +288,12 @@ New movie hiện chưa có một nhánh content-based cold-item model hoàn ch�
 | SVD + Popularity + Genre | ✅ Implemented | 150/50/50 raw source contract |
 | RRF merge/dedup/truncate | ✅ Implemented | Canonical K=200 |
 | PIT-safe feature builder | ✅ Implemented | 19 feature schema |
-| Group-aware XGBRanker | ✅ Implemented | LogisticRegression fallback khi thiếu dependency |
-| Dev gate và retrieval fallback | ✅ Implemented | Không tự promote |
+| Group-aware XGBRanker | ✅ Implemented | XGBoost bắt buộc; LogisticRegression chỉ là ablation |
+| Dev model selection và retrieval fallback | ✅ Implemented | Không tự promote |
 | MMR pool 40 | 🧪 Experimental | Cần benchmark theo release |
 | Offline funnel report | ✅ Implemented | Retrieval, rank, final, coverage, diversity |
 | FastAPI serving | ✅ Implemented | health, recommend, cold-start |
-| Versioned artifacts | ✅ Implemented | manifest, hash, schema, production pointer |
+| Versioned artifacts | ✅ Implemented | local manifest, hash, schema và pointer |
 | Online feedback/impression logs | 📌 Planned | Chưa có trong MovieLens |
 | External feature store/monitoring | 📌 Planned | Ngoài phạm vi repository |
 
@@ -331,18 +340,10 @@ python -c "from src.artifacts.release import promote_release; from src.utils imp
 ~~~text
 Two-Stage-Recommender/
 ├── .github/workflows/ci.yml
-├── configs/
-│   ├── data.yaml
-│   ├── retrieval.yaml
-│   ├── ranking.yaml
-│   └── serving.yaml
 ├── data/
 │   ├── raw/ml-1m/              # MovieLens 1M, không commit dữ liệu mới ngoài phạm vi
 │   └── processed/
-├── models/
-│   ├── production.json
-│   ├── candidates/
-│   └── legacy files            # artifact cũ giữ để tương thích/migration
+├── models/                    # artifact local/ignored sinh bởi train/test
 ├── reports/
 │   ├── test_metrics.json
 │   └── ablation.json
@@ -369,7 +370,8 @@ Two-Stage-Recommender/
 └── pytest.ini
 ~~~
 
-Ghi chú: src/ranking/diversity.py là compatibility shim để giữ import cũ; implementation chính nằm ở src/reranking/diversity.py. Các file __init__.py và .gitkeep rỗng nhưng có chủ đích: package marker và giữ thư mục rỗng trong Git, không nên xóa tự động.
+`src/reranking/diversity.py` là implementation duy nhất của MMR. Không còn
+module shim để giữ import cũ; các file `__init__.py` chỉ là package marker.
 
 ## 12. Cài đặt
 
@@ -383,7 +385,7 @@ python -m pip install -r requirements.txt
 ~~~
 
 `requirements.txt` chứa cả dependency chạy ứng dụng và công cụ kiểm tra
-(`pytest`, `httpx`, `ruff`). `httpx` là dependency cần thiết cho
+(`pytest`, `httpx`, `ruff`). `httpx` là dependency bắt buộc cho
 `fastapi.testclient.TestClient`. CI không cần commit dataset/model binary:
 `tests/conftest.py` tạo một schema-5 release tối thiểu có manifest/hash/policy chỉ khi chưa có
 `models/production.json`. Khi chạy local với production artifact thật, fixture
@@ -414,7 +416,7 @@ Train thực hiện:
 5. Sinh 150/50/50 raw candidates.
 6. RRF merge về K=200.
 7. Build rank dataset với PIT-safe features.
-8. Train grouped ranker và chạy Dev gate.
+8. Train grouped ranker và chạy Dev model selection.
 9. Ghi Release Candidate, không tự activate production.
 
 ### 13.2. Evaluation
@@ -497,15 +499,15 @@ Container chỉ phục vụ được nếu artifact production và dữ liệu c
 - Seen filtering là hard rule và áp dụng ở retrieval/serving.
 - Ranker fallback phải deterministic để dễ audit và không đổi semantics giữa evaluation và serving.
 - MMR tăng diversity nhưng có thể làm giảm relevance; pool 40 là guardrail hiện tại.
-- Report lịch sử không thay thế quality gate của release mới.
+- Report lịch sử không thay thế Dev model selection của release mới.
 
 ## 16. Files quan trọng để review
 
 - src/config.py: default contract và các dataclass cấu hình.
-- src/data/split.py: temporal boundaries và seen history.
+- src/data/split.py: canonical `temporal_split` và seen history.
 - src/retrieval/merger.py: raw source counts, RRF, dedup, truncate.
 - src/ranking/features.py: feature schema và point-in-time snapshots.
-- src/ranking/trainer.py: grouped XGBRanker và fallback.
+- src/ranking/trainer.py: grouped XGBRanker; LogisticRegression chỉ khi gọi tường minh cho ablation.
 - src/evaluation/evaluator.py: funnel metrics và conditional metrics.
 - src/serving/recommender.py: online fallback, recent context và MMR.
 - src/artifacts/loader.py: fail-closed validation.

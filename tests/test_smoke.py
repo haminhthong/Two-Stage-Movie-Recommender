@@ -11,10 +11,9 @@ import numpy as np
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
-
 from scripts.download_data import _safe_extract
 from src.api import app
-from src.data import time_split
+from src.data import temporal_split
 from src.evaluation.metrics import dcg, intra_list_diversity
 from src.recommender import Recommender
 from src.train import build_positive_interaction_matrix
@@ -61,8 +60,8 @@ def test_intra_list_diversity_skips_missing_metadata() -> None:
     assert intra_list_diversity([3, 4], {}) == 0.0
 
 
-def test_time_split_positive_sequence() -> None:
-    """Kiểm tra time_split đảm bảo positive ground truth và không rò rỉ dữ liệu tương lai."""
+def test_temporal_split_positive_sequence() -> None:
+    """Kiểm tra 4-way split giữ đúng thứ tự positive và không rò rỉ tương lai."""
     data = pd.DataFrame(
         {
             "user_id": [1, 1, 1, 1, 2, 2],
@@ -78,12 +77,16 @@ def test_time_split_positive_sequence() -> None:
             "timestamp": [100, 200, 250, 300, 100, 200],
         }
     )
-    train_df, val_df, test_df = time_split(data, rating_threshold=4.0, min_positive=3)
+    train_df, rank_df, val_df, test_df = temporal_split(
+        data, rating_threshold=4.0, min_positive=3
+    )
 
     # User 1 có >= 3 positive:
     # Tương tác positive cuối cùng: item 104 tại timestamp 300 -> test_df
     # Tương tác positive kề cuối: item 102 tại timestamp 200 -> val_df
-    # User 2 chỉ có 2 positive (< 3) -> toàn bộ ở train_df
+    # User 1 có thêm rank-train target là item 101.
+    assert len(rank_df) == 1
+    assert rank_df.iloc[0]["item_id"] == 101
     assert len(test_df) == 1
     assert test_df.iloc[0]["item_id"] == 104
     assert test_df.iloc[0]["rating"] == 5.0
@@ -92,12 +95,11 @@ def test_time_split_positive_sequence() -> None:
     assert val_df.iloc[0]["item_id"] == 102
     assert val_df.iloc[0]["rating"] == 4.0
 
-    # Train df cho user 1 chỉ chứa các tương tác có timestamp < 200 (val timestamp)
-    # Tức chỉ có item 101 (ts=100). Item 103 (ts=250) nằm giữa val và test nên không vào train.
+    # Retrieval train của user 1 phải nằm trước rank-train timestamp 100.
     user_1_train = train_df[train_df["user_id"] == 1]
-    assert list(user_1_train["item_id"]) == [101]
+    assert user_1_train.empty
 
-    # User 2 giữ nguyên trong train
+    # User 2 có ít hơn min_positive nên giữ nguyên trong retrieval train.
     user_2_train = train_df[train_df["user_id"] == 2]
     assert len(user_2_train) == 2
 

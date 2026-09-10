@@ -30,7 +30,7 @@ def apply_popularity_calibrator(
 
     calibrated: list[RankedCandidate] = []
     for c in candidates:
-        pop_sc = c.features.popularity_score if c.features else 0.0
+        pop_sc = c.features.popularity_retrieval_score if c.features else 0.0
         new_score = c.relevance_score - (penalty_factor * pop_sc)
         calibrated.append(
             RankedCandidate(

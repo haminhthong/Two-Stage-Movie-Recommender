@@ -1,13 +1,8 @@
-"""Module cấu hình tham số (Configuration dataclasses) cho toàn bộ hệ thống gợi ý Two-Stage.
-
-Hỗ trợ phân chia 4 tập theo thời gian (4-Way Temporal Split), trích xuất ứng viên đa nguồn (Multi-Source Retrieval),
-xếp hạng học máy Tầng 2 (Stage-2 Learned Ranker) và tái xếp hạng đa dạng hóa (MMR Diversity Reranking).
-"""
+"""Cấu hình duy nhất cho train, đánh giá và serving."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 
 
 @dataclass
@@ -31,7 +26,7 @@ class TrainConfig:
     popularity_candidate_k: int = 50
     genre_candidate_k: int = 50
 
-    # XGBRanker là mặc định; LogisticRegression chỉ là fallback khi thiếu XGBoost.
+    # XGBRanker là ranker chính; LogisticRegression chỉ dùng tường minh cho ablation.
     ranker_model_type: str = "xgboost"
 
     # Siêu tham số tìm kiếm lưới (Grid Search) cho baseline và MMR
@@ -62,32 +57,3 @@ class TrainConfig:
             "merge": {"method": "rrf", "rrf_k": 60},
             "seen_filter": "request_time",
         }
-
-
-@dataclass
-class RankingConfig:
-    """Cấu hình cho Tầng 2: Feature scoring, learned ranker và MMR diversity reranking."""
-
-    ranker_type: str = (
-        "xgb_ranker"  # "xgb_ranker", "logistic_regression", "weighted_fusion"
-    )
-    latent_weight: float = 0.9
-    genre_affinity_weight: float = 0.15
-    diversity_lambda: float = 0.95
-    popularity_scale: str = "log1p"  # 'log1p' hoặc 'linear'
-    candidate_k: int = 200
-    rerank_pool_k: int = 40
-    final_k: int = 10
-
-
-@dataclass
-class ServingConfig:
-    """Cấu hình phục vụ thời gian thực (Online Serving)."""
-
-    model_dir: str | Path = "models"
-    model_version: str = "v5-multisource-ranker"
-    candidate_k: int = 200
-    rerank_pool_k: int = 40
-    default_top_k: int = 10
-    max_top_k: int = 50
-    default_diversity_lambda: float = 0.95

@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import platform
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -34,8 +35,9 @@ def _git_commit(root_path: Path) -> str:
         root_path,
     )
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+        git_executable = shutil.which("git") or "git"
+        result = subprocess.run(  # noqa: S603 - executable được resolve từ PATH
+            [git_executable, "rev-parse", "HEAD"],
             cwd=git_root,
             check=True,
             capture_output=True,
@@ -168,7 +170,7 @@ def save_versioned_bundle(
             root_path / "production.json",
             {
                 "active_version": version,
-                "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "updated_at": dt.datetime.now(dt.UTC).isoformat(),
                 "schema_version": config_payload.get("schema_version", 5),
             },
         )

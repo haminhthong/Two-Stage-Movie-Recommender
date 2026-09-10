@@ -9,10 +9,8 @@ from .loader import compute_file_sha256, load_movies, load_ratings
 from .manifest import create_data_manifest, create_split_manifest
 from .schema import DataContract, InteractionEvent, MovieMetadata, RecommendationContext
 from .split import (
-    global_temporal_windows,
     seen_items_before,
-    temporal_split_four_way,
-    time_split,
+    temporal_split,
 )
 
 __all__ = [
@@ -26,10 +24,8 @@ __all__ = [
     "create_data_manifest",
     "create_split_manifest",
     "extract_seen_items",
-    "global_temporal_windows",
     "load_movies",
     "load_ratings",
     "seen_items_before",
-    "temporal_split_four_way",
-    "time_split",
+    "temporal_split",
 ]

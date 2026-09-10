@@ -18,7 +18,7 @@ from typing import Any
 
 import numpy as np
 
-from .data import load_ratings, seen_items_before, temporal_split_four_way
+from .data import load_ratings, seen_items_before, temporal_split
 from .evaluation.evaluator import FullFunnelEvaluator
 from .evaluation.latency import summarize_latencies
 from .evaluation.metrics import (
@@ -44,7 +44,7 @@ def evaluate_recommender(
     )
 
     df_ratings = load_ratings()
-    _, _, _, test_df = temporal_split_four_way(df_ratings)
+    _, _, _, test_df = temporal_split(df_ratings)
     test_truth = dict(zip(test_df.user_id, test_df.item_id, strict=True))
 
     recommender = Recommender()
@@ -109,7 +109,7 @@ def run_ablation_study(
     )
 
     df_ratings = load_ratings()
-    _, _, val_df, _ = temporal_split_four_way(df_ratings)
+    _, _, val_df, _ = temporal_split(df_ratings)
     dev_truth = dict(zip(val_df.user_id, val_df.item_id, strict=True))
 
     recommender = Recommender()
@@ -162,7 +162,7 @@ def run_ablation_study(
 
     # Pre-rank learned candidates
     if getattr(engine, "ranker_enabled", False):
-        for u_id, d in user_data.items():
+        for _u_id, d in user_data.items():
             d["learned_ranked"] = engine.ranker.rank(d["feats"])
 
     variants = {

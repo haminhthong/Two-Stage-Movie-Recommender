@@ -41,44 +41,28 @@ N_FEATURES = len(FEATURE_NAMES)
 
 @dataclass(frozen=True)
 class CandidateFeatures:
-    """Đặc trưng của một candidate tại một snapshot thời gian.
-
-    Ba trường đầu được giữ nguyên để các baseline cũ vẫn khởi tạo được object.
-    Vector model dùng feature contract 19 cột ở ``FEATURE_NAMES``.
-    """
+    """Đúng 19 feature model tại một snapshot thời gian."""
 
     item_id: int
-    latent_score: float
-    popularity_score: float
-    genre_affinity: float = 0.0
-
-    # Trường tương thích ngược và metadata hỗ trợ debug.
-    raw_latent_score: float = 0.0
-    retrieval_rank: int = 0
-    retrieval_rank_percentile: float = 0.0
-    user_positive_count: int = 0
-    user_avg_rating: float = 4.0
-    item_rating_count: int = 0
-    item_avg_rating: float = 3.5
-    item_genre_count: int = 1
-    item_popularity_percentile: float = 0.5
-    retrieved_by_svd: float = 0.0
-    retrieved_by_popularity: float = 0.0
-    retrieved_by_genre: float = 0.0
-    source_count: float = 1.0
-
-    # Feature contract mới, source-specific và group-aware.
-    svd_score: float = 0.0
-    svd_rank: int = 0
-    popularity_retrieval_score: float = 0.0
-    popularity_rank: int = 0
-    genre_retrieval_score: float = 0.0
-    genre_rank: int = 0
-    rrf_score: float = 0.0
-    user_interaction_count: int = 0
-    genre_entropy: float = 0.0
-    item_positive_count: int = 0
-    genre_overlap_count: int = 0
+    svd_score: float
+    svd_rank: int
+    popularity_retrieval_score: float
+    popularity_rank: int
+    genre_retrieval_score: float
+    genre_rank: int
+    rrf_score: float
+    source_count: float
+    user_positive_count: int
+    user_interaction_count: int
+    user_avg_rating: float
+    genre_entropy: float
+    item_positive_count: int
+    item_rating_count: int
+    item_avg_rating: float
+    item_popularity_percentile: float
+    item_genre_count: int
+    genre_affinity: float
+    genre_overlap_count: int
 
     def to_feature_vector(self) -> np.ndarray:
         """Chuyển object thành vector float32 đúng thứ tự feature contract."""
@@ -207,33 +191,6 @@ class CandidateFeatureBuilder:
         self._snapshot_cache[cutoff] = snapshot
         return snapshot
 
-    @staticmethod
-    def _normalise_source_scores(
-        candidates: Sequence[Candidate],
-        source: str,
-    ) -> np.ndarray:
-        """Min-max normalize score trong đúng source; candidate khác source nhận 0."""
-        values = np.asarray(
-            [
-                float(candidate.source_scores[source])
-                if source in candidate.source_scores
-                else np.nan
-                for candidate in candidates
-            ],
-            dtype=np.float32,
-        )
-        present = np.isfinite(values)
-        if not present.any():
-            return np.zeros(len(candidates), dtype=np.float32)
-        low = float(np.nanmin(values))
-        high = float(np.nanmax(values))
-        if high - low <= 1e-9:
-            values[present] = 1.0
-        else:
-            values[present] = (values[present] - low) / (high - low)
-        values[~present] = 0.0
-        return values
-
     def build_feature_matrix(
         self,
         candidates: Sequence[Candidate],
@@ -330,34 +287,11 @@ class CandidateFeatureBuilder:
             as_of_timestamp=as_of_timestamp,
         )
         features: list[CandidateFeatures] = []
-        n = len(candidates)
-        normalized_svd_scores = self._normalise_source_scores(candidates, "svd")
         for index, candidate in enumerate(candidates):
             row = matrix[index]
-            source_scores = candidate.source_scores
             features.append(
                 CandidateFeatures(
                     item_id=int(candidate.item_id),
-                    latent_score=float(normalized_svd_scores[index]),
-                    popularity_score=float(row[2]),
-                    genre_affinity=float(row[17]),
-                    raw_latent_score=float(
-                        candidate.svd_score
-                        if candidate.svd_score is not None
-                        else candidate.retrieval_score
-                    ),
-                    retrieval_rank=int(candidate.retrieval_rank),
-                    retrieval_rank_percentile=float(1.0 - index / max(1, n)),
-                    user_positive_count=int(row[8]),
-                    user_avg_rating=float(row[10]),
-                    item_rating_count=int(row[13]),
-                    item_avg_rating=float(row[14]),
-                    item_genre_count=int(row[16]),
-                    item_popularity_percentile=float(row[15]),
-                    retrieved_by_svd=float("svd" in source_scores),
-                    retrieved_by_popularity=float("popularity" in source_scores),
-                    retrieved_by_genre=float("genre" in source_scores),
-                    source_count=float(row[7]),
                     svd_score=float(row[0]),
                     svd_rank=int(row[1]),
                     popularity_retrieval_score=float(row[2]),
@@ -365,9 +299,17 @@ class CandidateFeatureBuilder:
                     genre_retrieval_score=float(row[4]),
                     genre_rank=int(row[5]),
                     rrf_score=float(row[6]),
+                    source_count=float(row[7]),
+                    user_positive_count=int(row[8]),
                     user_interaction_count=int(row[9]),
+                    user_avg_rating=float(row[10]),
                     genre_entropy=float(row[11]),
                     item_positive_count=int(row[12]),
+                    item_rating_count=int(row[13]),
+                    item_avg_rating=float(row[14]),
+                    item_popularity_percentile=float(row[15]),
+                    item_genre_count=int(row[16]),
+                    genre_affinity=float(row[17]),
                     genre_overlap_count=int(row[18]),
                 )
             )

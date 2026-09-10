@@ -1,6 +1,0 @@
-# Stage 2 là group-aware learning-to-rank.
-ranker: xgb_ranker
-objective: rank:ndcg
-feature_schema_version: rank-features-v1
-features: 19
-fallback: retrieval_order

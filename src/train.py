@@ -10,7 +10,7 @@ Quy trình chuẩn công nghiệp (Production Recommender Pipeline):
 5. Huấn luyện Stage-2 XGBRanker (rank:ndcg) với query groups và 19 feature.
 6. Validation Tuning: Tối ưu hóa siêu tham số alpha (cho baseline) và diversity_lambda (cho MMR) với
    kích thước rerank_pool_k = 40 đồng nhất, áp dụng pre-ranking caching để tối ưu tốc độ.
-7. Đóng gói Release Candidate; chỉ promotion sau khi locked test và release gates đạt.
+7. Đóng gói Release Candidate; promotion là bước explicit sau Locked Test.
 8. Báo cáo đánh giá phễu (Stage Funnel Metrics) và kết thúc quy trình.
 """
 
@@ -31,7 +31,7 @@ from .data import (
     extract_seen_items,
     load_movies,
     load_ratings,
-    temporal_split_four_way,
+    temporal_split,
 )
 from .evaluation.ranking_metrics import ranker_ndcg_at_k, ranker_recall_at_k
 from .ranking.dataset import RankDatasetBuilder
@@ -73,7 +73,7 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
         cfg.min_positive,
         cfg.rating_threshold,
     )
-    retrieval_train_df, rank_train_df, val_df, test_df = temporal_split_four_way(
+    retrieval_train_df, rank_train_df, val_df, test_df = temporal_split(
         df_ratings,
         rating_threshold=cfg.rating_threshold,
         min_positive=cfg.min_positive,
@@ -338,7 +338,7 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
     alpha_recalls: dict[str, float] = {}
     for alpha in cfg.alpha_candidates:
         hits: list[float] = []
-        for u_id, (
+        for _u_id, (
             true_item,
             cand_indices,
             norm_sc,
@@ -363,7 +363,7 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
     learned_recall = float(np.mean(val_learned_recalls)) if val_learned_recalls else 0.0
     ranker_enabled = learned_ndcg > stage1_ndcg and learned_recall >= stage1_recall
     LOGGER.info(
-        "Dev Stage-2 gate: order NDCG=%.4f/Recall=%.4f; ranker NDCG=%.4f/Recall=%.4f; enabled=%s",
+        "Dev model selection: order NDCG=%.4f/Recall=%.4f; ranker NDCG=%.4f/Recall=%.4f; enabled=%s",
         stage1_ndcg,
         stage1_recall,
         learned_ndcg,
@@ -373,7 +373,9 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
 
     # Tuning diversity theo constraint: NDCG không giảm quá 2%, sau đó chọn ILD cao nhất.
     diversity_tuning_results: dict[str, dict[str, float]] = {}
-    best_lambda = 0.0
+    # Lambda=1 là fallback an toàn: thuần relevance nếu không có lambda nào
+    # vượt guardrail đa dạng hóa. Lambda=0 vẫn là MMR hợp lệ, không phải cờ tắt.
+    best_lambda = 1.0
     best_ild = -1.0
     relevance_baseline_ndcg = learned_ndcg if ranker_enabled else stage1_ndcg
     relevance_floor = relevance_baseline_ndcg * 0.98
@@ -490,7 +492,7 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
             "stage1_order_recall@10": stage1_recall,
             "ranker_ndcg@10": learned_ndcg,
             "ranker_recall@10": learned_recall,
-            "ranker_gate_passed": ranker_enabled,
+            "ranker_dev_selection_passed": ranker_enabled,
         },
     }
 
@@ -501,7 +503,7 @@ def train_model(config: TrainConfig | None = None) -> dict[str, Any]:
         item_embeddings=item_embeddings,
         metadata=metadata_payload,
         config_payload=config_payload,
-        # Chỉ đóng gói ranker khi Dev gate đã bật; artifact bị loại không nên
+        # Chỉ đóng gói ranker khi Dev model selection đã bật; artifact bị loại không nên
         # trở thành một dependency runtime hoặc bị hiểu nhầm là model active.
         ranker=learned_ranker if ranker_enabled else None,
         data_manifest=data_manifest,

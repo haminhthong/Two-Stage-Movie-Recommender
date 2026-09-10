@@ -202,7 +202,7 @@ class FullFunnelEvaluator:
                     features,
                 )
             else:
-                # Evaluation phải dùng đúng fallback của serving khi Dev gate
+                # Evaluation phải dùng đúng fallback của serving khi Dev model selection
                 # tắt ranker: giữ thứ tự retrieval, không tự chuyển sang
                 # WeightedFusion vì đó là một pipeline khác.
                 ranked_cands = [

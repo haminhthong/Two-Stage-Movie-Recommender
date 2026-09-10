@@ -4,7 +4,7 @@
 1. Cold-Start Check -> Nếu user chưa có trong hệ thống, chuyển sang ColdStartPolicy.
 2. Stage 1: Candidate Retrieval (Multi-Source / SVD Dot Product) -> Rút trích ~200 ứng viên, lọc phim đã xem.
 3. Stage 2: Feature Engineering & Learned Ranking -> Chấm điểm bằng Stage-2 Learned Ranker (XGBoost).
-   Nếu quality gate tắt ranker, giữ nguyên retrieval order.
+   Nếu Dev model selection tắt ranker, giữ nguyên retrieval order.
 4. Stage 3: MMR Diversity Reranking với `rerank_pool_k = 40` đồng nhất với Offline Validation.
 5. Enrichment: Bổ sung metadata (Title, Genres, Popularity, Scores, Latencies).
 """
@@ -287,7 +287,7 @@ class TwoStageRecommenderEngine:
                 latent_weight_override=latent_weight,
             )
         else:
-            # Khi ranker bị tắt bởi Dev gate hoặc artifact không sẵn sàng,
+            # Khi ranker bị tắt bởi Dev model selection hoặc artifact không sẵn sàng,
             # fallback phải là thứ tự retrieval đã freeze, không phải một
             # heuristic khác làm thay đổi contract offline/online.
             ranked_candidates = [
@@ -334,17 +334,17 @@ class TwoStageRecommenderEngine:
             genres = sorted(self.genres_map.get(item_id, set()))
             pop_cnt = int(self.popularity_counts.get(item_id, 0))
 
-            pop_sc = rec.features.popularity_score if rec.features else 0.0
-            lat_sc = rec.features.latent_score if rec.features else 0.0
+            pop_sc = rec.features.popularity_retrieval_score if rec.features else 0.0
+            lat_sc = rec.features.svd_score if rec.features else 0.0
             aff_sc = rec.features.genre_affinity if rec.features else 0.0
 
             # Explanation
             reason_codes: list[str] = []
-            if rec.features and rec.features.retrieved_by_svd and lat_sc >= 0.5:
+            if rec.features and rec.features.svd_rank > 0 and lat_sc >= 0.5:
                 reason_codes.append("COLLABORATIVE_MATCH")
             if aff_sc > 0.0:
                 reason_codes.append("GENRE_MATCH")
-            if rec.features and rec.features.retrieved_by_popularity:
+            if rec.features and rec.features.popularity_rank > 0:
                 reason_codes.append("POPULARITY_SIGNAL")
             if not reason_codes:
                 reason_codes.append("RETRIEVAL_MATCH")

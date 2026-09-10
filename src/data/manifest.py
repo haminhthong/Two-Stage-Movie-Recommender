@@ -54,9 +54,8 @@ def create_split_manifest(
     return {
         "protocol": protocol,
         "description": (
-            "Per-user leave-last-3 positive split for the baseline protocol. "
-            "For strict cross-user backtests use global_temporal_windows; every "
-            "point-in-time feature must use timestamp < as_of."
+            "Per-user leave-last-3 positive split; every point-in-time feature "
+            "must use timestamp < as_of."
         ),
         "rating_threshold": float(rating_threshold),
         "min_positive": int(min_positive),

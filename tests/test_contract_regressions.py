@@ -5,7 +5,6 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
-
 from src.config import TrainConfig
 from src.evaluation.evaluator import FullFunnelEvaluator
 from src.ranking.dataset import RankDatasetBuilder

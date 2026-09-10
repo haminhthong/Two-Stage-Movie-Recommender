@@ -11,7 +11,6 @@ from io import BytesIO
 from pathlib import Path
 
 import requests
-
 from src.utils import LOGGER, setup_logging
 
 DATASET_URL: str = "https://files.grouplens.org/datasets/movielens/ml-1m.zip"

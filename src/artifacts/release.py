@@ -1,4 +1,4 @@
-"""Promotion release candidate sau khi vượt qua các quality gates."""
+"""Promotion explicit cho release candidate đã được review."""
 
 from __future__ import annotations
 
@@ -17,10 +17,10 @@ def promote_release(
     *,
     min_dev_ndcg_gain: float = 0.0,
 ) -> Path:
-    """Promote candidate thành production sau khi kiểm tra gate đã khai báo.
+    """Promote candidate thành production sau khi kiểm tra policy đã khai báo.
 
     Hàm này không tự chạy grid search. Test metrics phải được truyền từ một
-    pipeline frozen và ranker gate phải được ghi trong config của bundle.
+    pipeline frozen và kết quả Dev model selection phải được ghi trong config.
     """
     root = Path(base_dir)
     release_dir = root / version
@@ -42,7 +42,7 @@ def promote_release(
         root / "production.json",
         {
             "active_version": version,
-            "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "updated_at": dt.datetime.now(dt.UTC).isoformat(),
             "schema_version": config.get("schema_version", 5),
         },
     )

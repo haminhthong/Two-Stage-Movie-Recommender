@@ -1,6 +1,0 @@
-# Online flow: retrieve 200 -> rank 200 -> diversity pool 40 -> final 10.
-candidate_k: 200
-rerank_pool_k: 40
-final_k: 10
-debug_scores_default: false
-target_latency_budget_ms: 100

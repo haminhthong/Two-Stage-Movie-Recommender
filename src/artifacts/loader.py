@@ -152,7 +152,7 @@ def load_production_bundle(model_dir: str | Path = "models") -> dict[str, Any]:
     if str(config.get("version", "")) != str(manifest.get("model_version", "")):
         raise ArtifactValidationError("version trong config/manifest không khớp.")
     ranker_path = release / "ranking" / "ranker.joblib"
-    # Không load artifact ranker khi release đã tắt ranker qua quality gate.
+    # Không load artifact ranker khi release đã tắt ranker qua Dev model selection.
     # Điều này cũng cho phép service đọc legacy bundle mà không cài xgboost;
     # file thừa không được coi là active model.
     ranker = (

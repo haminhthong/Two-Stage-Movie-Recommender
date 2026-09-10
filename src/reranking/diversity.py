@@ -65,7 +65,7 @@ class DiversityReranker:
         }
 
     def genre_similarity(self, item_a: int, item_b: int) -> float:
-        """Tính hệ số tương đồng Jaccard giữa hai bộ phim bằng phép toán bitwise nanosecond."""
+        """Tính hệ số tương đồng Jaccard bằng bitmask thể loại."""
         if item_a == item_b:
             return 1.0
 
@@ -106,19 +106,6 @@ class DiversityReranker:
             rerank_pool_k if rerank_pool_k is not None else self.default_rerank_pool_k
         )
         pool = list(candidates[:pool_k])
-
-        # Lambda 0 là compatibility mode: tắt MMR và giữ retrieval/ranking order.
-        if diversity_lambda <= 1e-9:
-            return [
-                ScoredRecommendation(
-                    item_id=c.item_id,
-                    final_score=c.relevance_score,
-                    relevance_score=c.relevance_score,
-                    diversity_penalty=0.0,
-                    features=c.features,
-                )
-                for c in pool[:k]
-            ]
 
         raw_relevance = np.asarray(
             [candidate.relevance_score for candidate in pool], dtype=np.float32
