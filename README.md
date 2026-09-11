@@ -405,11 +405,15 @@ Container cần có `models/` đã được tạo bằng `python -m src.train`; 
 
 ## CI và repo cleanliness
 
-GitHub Actions chạy trên Python 3.10 và 3.11, với ba bước bắt buộc:
+GitHub Actions chạy trên Python 3.10 và 3.11, đồng thời build Docker image. Job
+Python có ba bước bắt buộc:
 
 1. Ruff lint.
 2. Ruff format check.
 3. Pytest.
+
+Job Docker chạy `docker build --tag two-stage-recommender:ci .` để bắt lỗi
+Dockerfile và build context ngay trên CI.
 
 `httpx` được pin trong `requirements.txt` vì FastAPI/Starlette `TestClient` cần
 HTTP client này. Raw data, model binary, report sinh tự động, cache và

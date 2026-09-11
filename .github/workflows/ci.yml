@@ -43,3 +43,15 @@ jobs:
 
       - name: Run tests
         run: python -m pytest -q
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build --tag two-stage-recommender:ci .
