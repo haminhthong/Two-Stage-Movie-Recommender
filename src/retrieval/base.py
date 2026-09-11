@@ -120,3 +120,19 @@ class CandidateRetriever(ABC):
             list[Candidate]: Danh sách ứng viên kèm điểm số và thông tin nguồn.
         """
         raise NotImplementedError
+
+
+def resolve_seen_items(
+    user_id: int,
+    filter_seen: bool = True,
+    seen_items_override: Iterable[int] | None = None,
+    seen_by_user: dict[int, set[int]] | None = None,
+) -> set[int]:
+    """Xác định tập item đã xem an toàn, không mutate state giữa các retriever."""
+    if not filter_seen:
+        return set()
+    if seen_items_override is not None:
+        return set(seen_items_override)
+    if seen_by_user is not None:
+        return seen_by_user.get(user_id, set())
+    return set()

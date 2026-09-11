@@ -24,46 +24,19 @@ from src.data.interactions import (
     extract_seen_items,
 )
 from src.data.split import temporal_split
-from src.evaluation.retrieval_metrics import (
+from src.evaluation import (
     candidate_recall_at_k,
     target_in_catalog_rate,
 )
 from src.model_io import load_model, save_model
-from src.ranking.features import N_FEATURES, CandidateFeatures
+from src.ranking.features import N_FEATURES
 from src.ranking.trainer import train_learned_ranker
 from src.reranking.diversity import DiversityReranker
 from src.retrieval.base import Candidate
 from src.retrieval.merger import MultiSourceRetriever
 from src.retrieval.popularity import PopularityRetriever
 from src.retrieval.svd import SVDRetriever
-
-
-def _feature(
-    item_id: int, svd_score: float, popularity_score: float
-) -> CandidateFeatures:
-    """Tạo fixture theo đúng feature contract 19 cột."""
-    return CandidateFeatures(
-        item_id=item_id,
-        svd_score=svd_score,
-        svd_rank=item_id,
-        popularity_retrieval_score=popularity_score,
-        popularity_rank=item_id,
-        genre_retrieval_score=0.0,
-        genre_rank=0,
-        rrf_score=1.0,
-        source_count=2.0,
-        user_positive_count=0,
-        user_interaction_count=0,
-        user_avg_rating=4.0,
-        genre_entropy=0.0,
-        item_positive_count=0,
-        item_rating_count=0,
-        item_avg_rating=3.5,
-        item_popularity_percentile=0.5,
-        item_genre_count=1,
-        genre_affinity=0.0,
-        genre_overlap_count=0,
-    )
+from tests.conftest import make_mock_candidate_features as _feature
 
 
 def test_no_validation_item_in_user_history() -> None:

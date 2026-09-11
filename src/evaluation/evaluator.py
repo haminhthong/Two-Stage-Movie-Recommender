@@ -11,8 +11,10 @@ import pandas as pd
 
 from ..data.split import seen_items_before
 from ..ranking.scorer import rank_candidates, retrieval_order
+from ..utils import safe_mean
 from .latency import summarize_latencies
 from .metrics import (
+    candidate_recall_at_k,
     compute_long_tail_distribution,
     compute_user_coverage,
     dcg,
@@ -20,9 +22,10 @@ from .metrics import (
     intra_list_diversity,
     mrr_at_k,
     novelty_at_k,
+    ranker_ndcg_at_k,
+    ranker_recall_at_k,
+    target_in_catalog_rate,
 )
-from .ranking_metrics import ranker_ndcg_at_k, ranker_recall_at_k
-from .retrieval_metrics import candidate_recall_at_k, target_in_catalog_rate
 
 
 class FullFunnelEvaluator:
@@ -289,9 +292,7 @@ class FullFunnelEvaluator:
         }
 
 
-def _mean(values: Sequence[float]) -> float:
-    """Tính trung bình an toàn cho danh sách rỗng."""
-    return float(np.mean(values)) if values else 0.0
+_mean = safe_mean
 
 
 def _relative_lift(value: float, baseline: float) -> float:

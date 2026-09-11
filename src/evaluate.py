@@ -9,35 +9,24 @@ from typing import Any
 import numpy as np
 
 from .data import load_ratings, seen_items_before, temporal_split
-from .evaluation.latency import summarize_latencies
-from .evaluation.metrics import (
+from .evaluation import (
+    candidate_recall_at_k,
+    cold_item_test_share,
     compute_user_coverage,
     hit_rate_at_k,
     intra_list_diversity,
     mrr_at_k,
     novelty_at_k,
-)
-from .evaluation.retrieval_metrics import (
-    candidate_recall_at_k,
-    cold_item_test_share,
+    ranker_ndcg_at_k,
+    summarize_latencies,
     target_in_catalog_rate,
 )
 from .ranking.scorer import rank_candidates, retrieval_order
 from .serving.recommender import Recommender
-from .utils import LOGGER, save_json, setup_logging
+from .utils import LOGGER, safe_mean, save_json, setup_logging
 
-
-def _mean(values: list[float]) -> float:
-    """Tính trung bình an toàn cho một metric theo user."""
-    return float(np.mean(values)) if values else 0.0
-
-
-def _ndcg_at_k(predictions: list[int], target: int, k: int) -> float:
-    """Tính nDCG cho leave-one-out ground truth."""
-    if target not in predictions[:k]:
-        return 0.0
-    rank = predictions.index(target)
-    return float(1.0 / np.log2(rank + 2))
+_mean = safe_mean
+_ndcg_at_k = ranker_ndcg_at_k
 
 
 def _variant_metrics(

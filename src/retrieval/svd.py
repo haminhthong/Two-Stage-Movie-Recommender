@@ -9,7 +9,7 @@ from collections.abc import Iterable
 
 import numpy as np
 
-from .base import Candidate, CandidateRetriever
+from .base import Candidate, CandidateRetriever, resolve_seen_items
 
 
 class SVDRetriever(CandidateRetriever):
@@ -70,15 +70,15 @@ class SVDRetriever(CandidateRetriever):
         latent_scores = self.item_embeddings @ user_vec
 
         # Lọc bỏ sản phẩm đã xem (Seen Filter guardrail)
-        if filter_seen:
-            seen_items = (
-                set(seen_items_override)
-                if seen_items_override is not None
-                else self.seen_by_user.get(user_id, set())
-            )
-            if seen_items:
-                seen_indices = np.isin(self.items, list(seen_items))
-                latent_scores[seen_indices] = -np.inf
+        seen_items = resolve_seen_items(
+            user_id=user_id,
+            filter_seen=filter_seen,
+            seen_items_override=seen_items_override,
+            seen_by_user=self.seen_by_user,
+        )
+        if seen_items:
+            seen_indices = np.isin(self.items, list(seen_items))
+            latent_scores[seen_indices] = -np.inf
 
         available_count = int(np.isfinite(latent_scores).sum())
         if available_count == 0:

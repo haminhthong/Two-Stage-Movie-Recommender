@@ -18,8 +18,7 @@ from .data import (
     seen_items_before,
     temporal_split,
 )
-from .evaluation.metrics import intra_list_diversity
-from .evaluation.ranking_metrics import ranker_ndcg_at_k, ranker_recall_at_k
+from .evaluation import intra_list_diversity, ranker_ndcg_at_k, ranker_recall_at_k
 from .model_io import save_model
 from .ranking.dataset import RankDatasetBuilder
 from .ranking.features import CandidateFeatureBuilder
@@ -30,7 +29,7 @@ from .retrieval.genre import GenreRetriever
 from .retrieval.merger import MultiSourceRetriever
 from .retrieval.popularity import PopularityRetriever
 from .retrieval.svd import SVDRetriever
-from .utils import LOGGER, set_seed, setup_logging
+from .utils import LOGGER, safe_mean, set_seed, setup_logging
 
 
 def _build_retrievers(
@@ -76,8 +75,7 @@ def _build_retrievers(
     )
 
 
-def _mean(values: list[float]) -> float:
-    return float(np.mean(values)) if values else 0.0
+_mean = safe_mean
 
 
 def train_model(config: TrainConfig | None = None) -> dict[str, Any]:

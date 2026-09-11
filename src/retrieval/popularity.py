@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from .base import Candidate, CandidateRetriever
+from .base import Candidate, CandidateRetriever, resolve_seen_items
 
 
 class PopularityRetriever(CandidateRetriever):
@@ -47,12 +47,11 @@ class PopularityRetriever(CandidateRetriever):
         if k <= 0:
             return []
 
-        seen = (
-            set(seen_items_override)
-            if filter_seen and seen_items_override is not None
-            else self.seen_by_user.get(user_id, set())
-            if filter_seen
-            else set()
+        seen = resolve_seen_items(
+            user_id=user_id,
+            filter_seen=filter_seen,
+            seen_items_override=seen_items_override,
+            seen_by_user=self.seen_by_user,
         )
         candidates: list[Candidate] = []
 

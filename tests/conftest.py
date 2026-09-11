@@ -2,11 +2,56 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 import numpy as np
 
 from src.model_io import save_model
+from src.ranking.features import CandidateFeatures
+
+
+def make_mock_candidate_features(
+    item_id: int, svd_score: float, popularity_score: float
+) -> CandidateFeatures:
+    """Tạo fixture CandidateFeatures đúng schema 19 cột dùng chung cho các test."""
+    return CandidateFeatures(
+        item_id=item_id,
+        svd_score=svd_score,
+        svd_rank=item_id,
+        popularity_retrieval_score=popularity_score,
+        popularity_rank=item_id,
+        genre_retrieval_score=0.0,
+        genre_rank=0,
+        rrf_score=1.0,
+        source_count=2.0,
+        user_positive_count=0,
+        user_interaction_count=0,
+        user_avg_rating=4.0,
+        genre_entropy=0.0,
+        item_positive_count=0,
+        item_rating_count=0,
+        item_avg_rating=3.5,
+        item_popularity_percentile=0.5,
+        item_genre_count=1,
+        genre_affinity=0.0,
+        genre_overlap_count=0,
+    )
+
+
+def pytest_configure(config) -> None:
+    """Đảm bảo thư mục tạm basetemp luôn có quyền ghi, tránh PermissionError trên Windows."""
+    if config.option.basetemp is None:
+        try:
+            user = os.getenv("USERNAME") or os.getenv("USER") or "user"
+            default_dir = Path(tempfile.gettempdir()) / f"pytest-of-{user}"
+            if default_dir.exists():
+                test_file = default_dir / ".perm_check"
+                test_file.touch()
+                test_file.unlink()
+        except OSError:
+            config.option.basetemp = Path(tempfile.mkdtemp(prefix="pytest_safe_"))
 
 
 def _write_ci_fixture(project_root: Path) -> None:

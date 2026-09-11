@@ -3,6 +3,8 @@
 from .evaluator import FullFunnelEvaluator
 from .latency import StageLatencyReport, summarize_latencies
 from .metrics import (
+    candidate_recall_at_k,
+    cold_item_test_share,
     compute_long_tail_distribution,
     compute_user_coverage,
     dcg,
@@ -10,11 +12,8 @@ from .metrics import (
     intra_list_diversity,
     mrr_at_k,
     novelty_at_k,
-)
-from .ranking_metrics import ranker_ndcg_at_k, ranker_recall_at_k
-from .retrieval_metrics import (
-    candidate_recall_at_k,
-    cold_item_test_share,
+    ranker_ndcg_at_k,
+    ranker_recall_at_k,
     target_in_catalog_rate,
 )
 

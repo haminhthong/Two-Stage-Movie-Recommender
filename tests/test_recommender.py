@@ -16,39 +16,12 @@ from fastapi.testclient import TestClient
 
 from src.api import app
 from src.data import temporal_split
-from src.ranking.features import CandidateFeatureBuilder, CandidateFeatures
+from src.ranking.features import CandidateFeatureBuilder
 from src.reranking.diversity import DiversityReranker, RankedCandidate
 from src.retrieval.base import Candidate
 from src.retrieval.svd import SVDRetriever
 from src.serving.recommender import Recommender
-
-
-def _feature(
-    item_id: int, svd_score: float, popularity_score: float
-) -> CandidateFeatures:
-    """Tạo feature fixture đúng schema 19 cột."""
-    return CandidateFeatures(
-        item_id=item_id,
-        svd_score=svd_score,
-        svd_rank=item_id,
-        popularity_retrieval_score=popularity_score,
-        popularity_rank=item_id,
-        genre_retrieval_score=0.0,
-        genre_rank=0,
-        rrf_score=1.0,
-        source_count=2.0,
-        user_positive_count=0,
-        user_interaction_count=0,
-        user_avg_rating=4.0,
-        genre_entropy=0.0,
-        item_positive_count=0,
-        item_rating_count=0,
-        item_avg_rating=3.5,
-        item_popularity_percentile=0.5,
-        item_genre_count=1,
-        genre_affinity=0.0,
-        genre_overlap_count=0,
-    )
+from tests.conftest import make_mock_candidate_features as _feature
 
 
 def test_temporal_split_no_future_leakage() -> None:

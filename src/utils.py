@@ -6,12 +6,18 @@ import json
 import logging
 import os
 import random
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 LOGGER = logging.getLogger("two_stage_recommender")
+
+
+def safe_mean(values: Sequence[float]) -> float:
+    """Tính trung bình an toàn cho một tập số, trả về 0.0 nếu tập rỗng."""
+    return float(np.mean(values)) if len(values) > 0 else 0.0
 
 
 def setup_logging(default_level: str = "INFO") -> None:

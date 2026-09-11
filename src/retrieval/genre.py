@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from .base import Candidate, CandidateRetriever
+from .base import Candidate, CandidateRetriever, resolve_seen_items
 
 
 class GenreRetriever(CandidateRetriever):
@@ -45,12 +45,11 @@ class GenreRetriever(CandidateRetriever):
             return []
 
         user_profile = self.user_genre_profiles.get(user_id, {})
-        seen = (
-            set(seen_items_override)
-            if filter_seen and seen_items_override is not None
-            else self.seen_by_user.get(user_id, set())
-            if filter_seen
-            else set()
+        seen = resolve_seen_items(
+            user_id=user_id,
+            filter_seen=filter_seen,
+            seen_items_override=seen_items_override,
+            seen_by_user=self.seen_by_user,
         )
 
         if not user_profile:

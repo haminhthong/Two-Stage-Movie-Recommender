@@ -8,7 +8,11 @@ Bao gồm:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
+
+from ..retrieval.base import Candidate
 
 
 def dcg(rank: int) -> float:
@@ -131,3 +135,77 @@ def compute_user_coverage(all_recommendations: list[list[int]], k: int) -> float
         return 0.0
     full_k_users = sum(1 for preds in all_recommendations if len(preds) >= k)
     return float(full_k_users / len(all_recommendations))
+
+
+def ranker_recall_at_k(
+    ranked_items: Sequence[int],
+    target_item: int,
+    k: int = 10,
+) -> float:
+    """Đo HitRate/Recall của Ranker tại top-K (trước MMR)."""
+    if not ranked_items or k <= 0:
+        return 0.0
+    return 1.0 if target_item in ranked_items[:k] else 0.0
+
+
+def ranker_ndcg_at_k(
+    ranked_items: Sequence[int],
+    target_item: int,
+    k: int = 10,
+) -> float:
+    """Đo vị trí xếp hạng có trọng số của Ranker (trước MMR)."""
+    top_items = ranked_items[:k]
+    if target_item in top_items:
+        rank_0indexed = top_items.index(target_item)
+        return float(1.0 / np.log2(rank_0indexed + 2))
+    return 0.0
+
+
+def candidate_recall_at_k(
+    candidates: Sequence[Candidate] | Sequence[int],
+    target_item: int,
+    k: int = 200,
+) -> float:
+    """Tính Candidate Recall@K cho một người dùng: item đúng có lọt vào top K candidates không.
+
+    Args:
+        candidates: Danh sách Candidate hoặc danh sách item_id.
+        target_item: ID phim ground truth cần tìm.
+        k: Ngưỡng cắt K (ví dụ: 50, 100, 200).
+
+    Returns:
+        float: 1.0 nếu target_item xuất hiện trong top K candidates, ngược lại 0.0.
+    """
+    if not candidates or k <= 0:
+        return 0.0
+
+    sliced = candidates[:k]
+    if sliced and isinstance(sliced[0], Candidate):
+        item_set = {c.item_id for c in sliced}  # type: ignore[union-attr]
+    else:
+        item_set = set(sliced)  # type: ignore[arg-type]
+
+    return 1.0 if target_item in item_set else 0.0
+
+
+def target_in_catalog_rate(
+    test_targets: Sequence[int],
+    train_catalog: set[int],
+) -> float:
+    """Đo lường tỷ lệ các item mục tiêu trong tập Test thực sự có mặt trong danh mục Train.
+
+    Nếu item chưa từng xuất hiện trong Train, Stage 1 Collaborative không thể trích xuất nó.
+    Đây là New-Item Cold-Start, không phải lỗi do thuật toán Ranking.
+    """
+    if not test_targets:
+        return 0.0
+    in_catalog_count = sum(1 for item in test_targets if item in train_catalog)
+    return float(in_catalog_count / len(test_targets))
+
+
+def cold_item_test_share(
+    test_targets: Sequence[int],
+    train_catalog: set[int],
+) -> float:
+    """Tỷ lệ các trường hợp test là cold-start item ngoài catalog train."""
+    return 1.0 - target_in_catalog_rate(test_targets, train_catalog)
