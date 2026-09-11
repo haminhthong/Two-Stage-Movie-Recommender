@@ -104,7 +104,7 @@ def run_experiment(
     rerank_pool_k = int(recommender.config.get("rerank_pool_k", 40))
     final_k = int(k)
     genres = recommender.genres_map
-    catalog = set(int(item_id) for item_id in recommender.items.tolist())
+    catalog = {int(item_id) for item_id in recommender.items.tolist()}
     counts = {
         int(item_id): int(count)
         for item_id, count in recommender.popularity_counts.items()

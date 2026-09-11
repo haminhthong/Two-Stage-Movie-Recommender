@@ -13,6 +13,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from fastapi.testclient import TestClient
+
 from src.api import app
 from src.data import temporal_split
 from src.ranking.features import CandidateFeatureBuilder, CandidateFeatures

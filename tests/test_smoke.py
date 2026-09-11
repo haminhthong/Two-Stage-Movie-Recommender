@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
+
 from scripts.download_data import _safe_extract
 from src.api import app
 from src.data import temporal_split

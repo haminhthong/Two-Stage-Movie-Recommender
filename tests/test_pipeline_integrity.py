@@ -18,6 +18,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+
 from src.data.interactions import (
     build_user_genre_profiles,
     extract_seen_items,
@@ -220,19 +221,16 @@ def test_mmr_pool_same_between_validation_and_serving() -> None:
 
     cands = [_feature(i, 1.0 - i * 0.01, 0.5) for i in range(100)]
     ranked = [
-        from_feat
-        for from_feat in [
-            type(
-                "MockRanked",
-                (),
-                {
-                    "item_id": c.item_id,
-                    "relevance_score": c.svd_score,
-                    "features": c,
-                },
-            )()
-            for c in cands
-        ]
+        type(
+            "MockRanked",
+            (),
+            {
+                "item_id": c.item_id,
+                "relevance_score": c.svd_score,
+                "features": c,
+            },
+        )()
+        for c in cands
     ]
 
     recs = reranker.rerank(ranked, k=10, rerank_pool_k=40)

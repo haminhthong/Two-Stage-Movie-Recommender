@@ -200,7 +200,7 @@ class CandidateFeatureBuilder:
                     }
 
         item_snapshot: dict[int, dict[str, float]] = {}
-        for item_id in set(int(value) for value in item_ids):
+        for item_id in {int(value) for value in item_ids}:
             timeline = self._item_timelines.get(item_id)
             if timeline is None:
                 continue
