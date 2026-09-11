@@ -365,8 +365,8 @@ train_model(TrainConfig(max_rank_train_users=1000, max_val_users=500))
 Chạy test và lint:
 
 ```bash
-python -m ruff check src tests scripts
-python -m ruff format --check src tests scripts
+python -m ruff check --no-cache src tests scripts
+python -m ruff format --no-cache --check src tests scripts
 python -m pytest -q
 ```
 
