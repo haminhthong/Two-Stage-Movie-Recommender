@@ -321,8 +321,11 @@ Two-Stage-Movie-Recommender/
 ├── reports/                   # experiment.json sau khi evaluate
 ├── .github/workflows/ci.yml
 ├── Dockerfile
+├── .dockerignore
 ├── Makefile
 ├── requirements.txt
+├── pyproject.toml            # Ruff rules dùng chung trên Windows/Linux/CI
+├── pytest.ini                # test discovery, không giữ basetemp cố định
 ├── README.md
 └── LICENSE
 ```
@@ -414,6 +417,11 @@ Python có ba bước bắt buộc:
 
 Job Docker chạy `docker build --tag two-stage-recommender:ci .` để bắt lỗi
 Dockerfile và build context ngay trên CI.
+
+Luật Ruff được khai báo trong `pyproject.toml` để kết quả lint không phụ thuộc
+vào cấu hình cá nhân của máy chạy. `.dockerignore` loại test, dataset và cache
+khỏi production image; `pytest.ini` chỉ cấu hình test discovery và không tạo
+thư mục tạm cố định trong repository.
 
 `httpx` được pin trong `requirements.txt` vì FastAPI/Starlette `TestClient` cần
 HTTP client này. Raw data, model binary, report sinh tự động, cache và
