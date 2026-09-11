@@ -45,7 +45,7 @@ jobs:
         run: python -m pytest -q
 
   docker:
-    name: Docker build
+    name: Docker build & test
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -55,3 +55,11 @@ jobs:
 
       - name: Build image
         run: docker build --tag two-stage-recommender:ci .
+
+      - name: Verify container health
+        run: |
+          docker run -d --name recommender-test -p 8000:8000 two-stage-recommender:ci
+          sleep 5
+          docker logs recommender-test
+          curl --fail --retry 5 --retry-delay 2 http://127.0.0.1:8000/health
+          docker rm -f recommender-test
